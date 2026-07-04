@@ -578,7 +578,7 @@ class TickerApp:
                     lbl_change.bind(event_name, getattr(self, event_name.replace("<", "_on_").replace(">", "").replace("-", "_").lower(), None))
 
                 lbl_sep = tk.Label(
-                    frame, text=" |", fg="#585b70", bg=TRANSPARENT_COLOR,
+                    frame, text=" | ", fg="#585b70", bg=TRANSPARENT_COLOR,
                     font=("Consolas", 9)
                 )
 
