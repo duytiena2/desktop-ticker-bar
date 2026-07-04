@@ -23,7 +23,7 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 
 API_TIMEOUT = 5           # Thời gian chờ API tối đa (giây)
 UPDATE_INTERVAL = 10      # Chu kỳ cập nhật dữ liệu (giây)
-KEEP_ON_TOP_INTERVAL = 5000  # Chu kỳ giữ cửa sổ ở trên cùng (ms)
+KEEP_ON_TOP_INTERVAL = 2000  # Chu kỳ giữ cửa sổ ở trên cùng (ms)
 TRANSPARENT_COLOR = "#000001"
 
 REQUIRED_KEYS = {"type", "symbol", "label"}
@@ -304,6 +304,8 @@ class TickerApp:
     # ── Drag & Drop ────────────────────────────────────────
 
     def _on_drag_start(self, event):
+        self.root.lift()
+        self.root.attributes("-topmost", True)
         self._drag["x"] = event.x_root
         self._drag["y"] = event.y_root
         self._drag["win_x"] = self.root.winfo_x()
