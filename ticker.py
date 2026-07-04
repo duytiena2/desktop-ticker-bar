@@ -312,8 +312,8 @@ class TickerApp:
 
     def _save_config(self, x=None, y=None, symbols=None):
         """Ghi cấu hình ra file JSON."""
-        # Luôn cố định x ở 0 vì thanh bar đã chiếm full màn hình
-        x = 0
+        if x is None:
+            x = self.root.winfo_x()
         if y is None:
             y = self.root.winfo_y()
         if symbols is None:
@@ -329,15 +329,15 @@ class TickerApp:
         config = self._load_config()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        self._width = screen_w  # Chiếm trọn bề ngang màn hình để hiển thị tối đa các mã
+        self._width = screen_w - 200
         self._height = 25
 
-        if config and "y" in config:
-            self._x = 0  # Luôn cố định x ở mép trái màn hình
+        if config and "x" in config and "y" in config:
+            self._x = config["x"]
             self._y = config["y"]
             self.symbols = config.get("symbols", DEFAULT_SYMBOLS)
         else:
-            self._x = 0
+            self._x = 180
             self._y = screen_h - self._height - 10
             self._save_config(self._x, self._y, DEFAULT_SYMBOLS)
 
@@ -388,14 +388,16 @@ class TickerApp:
         self.tooltip.hidetip()
 
     def _on_drag_motion(self, event):
+        dx = event.x_root - self._drag["x"]
         dy = event.y_root - self._drag["y"]
+        nx = self._drag["win_x"] + dx
         ny = self._drag["win_y"] + dy
-        # Khóa x ở 0 để thanh bar luôn thẳng mép màn hình, chỉ thay đổi y (trượt lên/xuống)
-        self.root.geometry(f"+0+{ny}")
+        self.root.geometry(f"+{nx}+{ny}")
 
     def _on_drag_stop(self, _event):
-        # Chỉ ghi config khi vị trí dọc (y) thực sự thay đổi
-        if self.root.winfo_y() != self._drag["win_y"]:
+        # Chỉ ghi config khi vị trí thực sự thay đổi
+        if (self.root.winfo_x() != self._drag["win_x"]
+                or self.root.winfo_y() != self._drag["win_y"]):
             self._save_config()
 
     # ── Context Menu ───────────────────────────────────────
