@@ -555,7 +555,7 @@ class TickerApp:
             # Nếu chưa có widget, tiến hành tạo mới
             if key not in self.symbol_widgets:
                 frame = tk.Frame(self.container_frame, bg=TRANSPARENT_COLOR)
-                frame.pack(side="left", padx=2)
+                frame.pack(side="left", padx=0)
 
                 # Bind các sự kiện drag & drop và click chuột lên frame con
                 for event_name in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>", "<Double-Button-1>", "<Button-3>"):
