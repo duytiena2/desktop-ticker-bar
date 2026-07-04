@@ -56,8 +56,16 @@ class Tooltip:
         """Hiển thị Tooltip tại vị trí chuột."""
         if self.tipwindow or not text:
             return
-        x = x_root + 15
-        y = y_root + 15
+        
+        # Nếu chuột nằm ở nửa dưới màn hình, hiển thị Tooltip phía trên chuột để tránh bị che
+        screen_h = self.widget.winfo_screenheight()
+        if y_root > screen_h / 2:
+            x = x_root + 15
+            y = y_root - 95
+        else:
+            x = x_root + 15
+            y = y_root + 15
+
         self.tipwindow = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
@@ -76,8 +84,13 @@ class Tooltip:
     def movetip(self, x_root, y_root):
         """Di chuyển Tooltip theo chuột."""
         if self.tipwindow:
-            x = x_root + 15
-            y = y_root + 15
+            screen_h = self.widget.winfo_screenheight()
+            if y_root > screen_h / 2:
+                x = x_root + 15
+                y = y_root - 95
+            else:
+                x = x_root + 15
+                y = y_root + 15
             self.tipwindow.wm_geometry(f"+{x}+{y}")
 
     def hidetip(self):
