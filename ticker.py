@@ -13,7 +13,6 @@ import threading
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 # ── Tắt cảnh báo SSL (cho API vnappmob) ───────────────────
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -408,8 +407,7 @@ class TickerApp:
                 if not parts:
                     display = " Loading Data..."
                 else:
-                    now = datetime.now().strftime("%H:%M")
-                    display = " | ".join(parts) + f"  ⏱{now}"
+                    display = " | ".join(parts)
 
                 self.root.after(0, lambda t=display: self.label.config(text=t))
 
