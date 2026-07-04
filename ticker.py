@@ -156,7 +156,7 @@ class PriceProvider:
     # ── Chứng khoán (Yahoo Finance) ───────────────────────
 
     def get_stock_price(self, symbol):
-        """Lấy giá chứng khoán + % thay đổi từ Yahoo Finance."""
+        """Lấy giá chứng khoán từ Yahoo Finance (không lấy % thay đổi)."""
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         try:
             r = self.session.get(url, timeout=API_TIMEOUT)
@@ -166,9 +166,7 @@ class PriceProvider:
             if result:
                 meta = result[0]["meta"]
                 price = float(meta["regularMarketPrice"])
-                prev = float(meta.get("chartPreviousClose", meta.get("previousClose", 0)))
-                change_pct = ((price - prev) / prev * 100) if prev else None
-                return price, change_pct
+                return price, None
         except Exception:
             pass
         return None, None
