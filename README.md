@@ -38,7 +38,7 @@
 
 1. **Chạy ứng dụng**:
    ```bash
-   python crypto_ticker.py
+   python ticker.py
    ```
 2. **Di chuyển**: Nhấp chuột trái và kéo để di chuyển thanh giá.
 3. **Cài đặt (Đổi mã/Đổi nhãn)**:
@@ -77,7 +77,7 @@ Dưới đây là định dạng cấu hình hiển thị:
      ```bat
      @echo off
      cd /d "Đường_dẫn_thư_mục_chứa_code"
-     start pythonw.exe crypto_ticker.py
+     start pythonw.exe ticker.py
      ```
    *(Sử dụng `pythonw.exe` thay vì `python.exe` giúp chạy ẩn cửa sổ console đen chỉ hiển thị thanh giá).*
 3. Kéo file `.bat` này vào thư mục Startup vừa mở.
