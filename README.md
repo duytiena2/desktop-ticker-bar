@@ -20,7 +20,14 @@
   - **Cài đặt**: Chỉnh sửa trực tiếp danh sách mã hiển thị bằng định dạng JSON.
   - **Tải lại ngay**: Buộc cập nhật dữ liệu lập tức mà không cần đợi hết chu kỳ.
   - **Thoát**: Tắt ứng dụng an toàn.
-- 🛡️ **Chống mất kết nối (Offline Cache)**: Lưu lại giá trị gần nhất để hiển thị kèm dấu hiệu nhận biết (`*`) khi mạng bị lỗi hoặc mất kết nối.
+- 🛡️ **Chống mất kết nối (Offline Cache)**: Lưu lại giá trị gần nhất để hiển thị kèm dấu hiệu nhận biết (`*`) khi mạng bị lỗi hoặc mất kết nối. Nếu chưa từng lấy được dữ liệu (chưa có cache), hiển thị `--` thay vì để trống.
+- ⏱️ **Chu kỳ cập nhật riêng theo loại tài sản**: Crypto 10s, P2P 20s, Chứng khoán 30s, Vàng 60s — giảm tải gọi API không cần thiết.
+- 🖱️ **Click để mở nguồn giá**: Click (không kéo) vào một mã sẽ mở trang nguồn (Binance/Yahoo Finance/SJC) trên trình duyệt.
+- ↔️ **Sắp xếp lại / xóa mã**: Chuột phải vào một mã cụ thể để Di chuyển trái/phải hoặc Xóa mã khỏi thanh giá.
+- 🔔 **Cảnh báo giá**: Thêm `alert_above`/`alert_below` vào mã trong config để nhận highlight màu khi giá vượt ngưỡng (ghi log vào `ticker.log`).
+- 🎨 **Theme tùy chỉnh**: Chỉnh độ trong suốt và cỡ chữ trực tiếp trong cửa sổ Cài đặt (lưu vào `config.json` mục `theme`).
+- 🗂️ **Icon khay hệ thống (tùy chọn)**: Nếu cài thêm `pystray` + `Pillow`, ứng dụng có icon khay để Hiện/Ẩn nhanh mà không cần thoát.
+- 📝 **Ghi log**: Lỗi gọi API và cảnh báo giá được ghi vào `ticker.log` (tự động xoay vòng) để dễ dò lỗi.
 
 ---
 
@@ -65,6 +72,18 @@ Dưới đây là định dạng cấu hình hiển thị:
 - `p2p`: Binance P2P. `symbol` là loại asset cần theo dõi (ví dụ: `USDT`, `FDUSD`).
 - `gold`: Giá vàng SJC Việt Nam. `symbol` là `sjc`.
 - `stock`: Chứng khoán Yahoo Finance. `symbol` cần định dạng theo Yahoo (ví dụ: `FPT.VN`, `^VNINDEX.VN` cho chỉ số VN-Index).
+
+*Tùy chọn cảnh báo giá (mọi `type`):*
+```json
+{"type": "crypto", "symbol": "BTC", "label": "BTC", "alert_above": 70000, "alert_below": 60000}
+```
+Khi giá vượt `alert_above` hoặc xuống dưới `alert_below`, mã sẽ được highlight màu vàng tạm thời và ghi log vào `ticker.log`.
+
+*Mục `theme` trong `config.json` (tự động lưu khi chỉnh trong cửa sổ Cài đặt):*
+```json
+{"font_family": "Consolas", "font_size": 9, "opacity": 1.0, "fg": "white",
+ "positive_color": "#a6e3a1", "negative_color": "#f38ba8"}
+```
 
 ---
 

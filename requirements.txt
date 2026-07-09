@@ -1,2 +1,9 @@
 requests>=2.31.0
 urllib3>=2.0.0
+
+# Tùy chọn: icon khay hệ thống (system tray). Nếu không cài, app vẫn chạy bình thường.
+pystray>=0.19.0
+Pillow>=10.0.0
+
+# Tùy chọn: chạy unit test (tests/test_ticker.py)
+pytest>=7.0.0

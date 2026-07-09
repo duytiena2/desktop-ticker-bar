@@ -12,6 +12,10 @@ from urllib3.util.retry import Retry
 import threading
 import json
 import os
+import time
+import logging
+import webbrowser
+from logging.handlers import RotatingFileHandler
 from concurrent.futures import ThreadPoolExecutor
 
 # ── Tắt cảnh báo SSL (cho API vnappmob) ───────────────────
@@ -20,11 +24,21 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ── Hằng số ────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
+LOG_FILE = os.path.join(SCRIPT_DIR, "ticker.log")
 
-API_TIMEOUT = 5           # Thời gian chờ API tối đa (giây)
-UPDATE_INTERVAL = 10      # Chu kỳ cập nhật dữ liệu (giây)
+API_TIMEOUT = 5              # Thời gian chờ API tối đa (giây)
+DEFAULT_UPDATE_INTERVAL = 10  # Chu kỳ cập nhật mặc định (giây)
+TYPE_INTERVALS = {           # Chu kỳ cập nhật riêng theo loại tài sản (giây)
+    "crypto": 10,
+    "p2p": 20,
+    "gold": 60,
+    "stock": 30,
+}
+TICK_INTERVAL = 5            # Nhịp kiểm tra "đến hạn cập nhật" của vòng lặp chính
 KEEP_ON_TOP_INTERVAL = 2000  # Chu kỳ giữ cửa sổ ở trên cùng (ms)
 TRANSPARENT_COLOR = "#000001"
+CLICK_MOVE_THRESHOLD = 4     # Ngưỡng (px) để phân biệt "click" và "kéo thả"
+ALERT_FLASH_MS = 3000        # Thời gian highlight khi có cảnh báo giá (ms)
 
 REQUIRED_KEYS = {"type", "symbol", "label"}
 VALID_TYPES = {"crypto", "p2p", "gold", "stock"}
@@ -38,6 +52,67 @@ DEFAULT_SYMBOLS = [
     {"type": "stock", "symbol": "E1VFVN30.VN", "label": "VN30"},
 ]
 
+DEFAULT_THEME = {
+    "font_family": "Consolas",
+    "font_size": 9,
+    "fg": "white",
+    "positive_color": "#a6e3a1",
+    "negative_color": "#f38ba8",
+    "separator_color": "#585b70",
+    "alert_color": "#f9e2af",
+    "opacity": 1.0,
+}
+
+# Đường dẫn mở khi click (không kéo) vào một mã trên thanh giá
+SOURCE_URLS = {
+    "crypto": lambda sym: f"https://www.binance.com/en/trade/{sym}_USDT",
+    "p2p": lambda sym: f"https://p2p.binance.com/en/trade/all-payments/{sym}?fiat=VND",
+    "gold": lambda sym: "https://sjc.com.vn/bieu-do-gia-vang",
+    "stock": lambda sym: f"https://finance.yahoo.com/quote/{sym}",
+}
+
+
+# ═══════════════════════════════════════════════════════════
+#  Logging
+# ═══════════════════════════════════════════════════════════
+
+def _setup_logger():
+    logger = logging.getLogger("ticker")
+    logger.setLevel(logging.INFO)
+    handler = RotatingFileHandler(LOG_FILE, maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
+logger = _setup_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+#  Hàm thuần túy (dễ unit test, không phụ thuộc Tkinter)
+# ═══════════════════════════════════════════════════════════
+
+def format_price_text(label, price, symbol_type, is_fallback=False, no_data=False):
+    """Định dạng chuỗi hiển thị giá cho một mã."""
+    if no_data:
+        return f"{label}:--"
+    suffix = "*" if is_fallback else ""
+    if symbol_type == "crypto":
+        return f"{label}:${price:,.0f}{suffix}"
+    return f"{label}:{price:,.0f}đ{suffix}"
+
+
+def format_change_display(change_pct, theme=None):
+    """Trả về (text, color) cho % thay đổi giá."""
+    theme = theme or DEFAULT_THEME
+    if change_pct is None:
+        return "", theme["fg"]
+    arrow = "▲" if change_pct >= 0 else "▼"
+    sign = "+" if change_pct >= 0 else ""
+    text = f"{arrow}{sign}{change_pct:.1f}%"
+    color = theme["positive_color"] if change_pct >= 0 else theme["negative_color"]
+    return text, color
+
 
 # ═══════════════════════════════════════════════════════════
 #  Tooltip — Cửa sổ thông tin chi tiết khi Hover
@@ -49,14 +124,12 @@ class Tooltip:
     def __init__(self, widget):
         self.widget = widget
         self.tipwindow = None
-        self.x = 0
-        self.y = 0
 
     def showtip(self, text, x_root, y_root):
         """Hiển thị Tooltip tại vị trí chuột."""
         if self.tipwindow or not text:
             return
-        
+
         # Nếu chuột nằm ở nửa dưới màn hình, hiển thị Tooltip phía trên chuột để tránh bị che
         screen_h = self.widget.winfo_screenheight()
         if y_root > screen_h / 2:
@@ -128,6 +201,7 @@ class PriceProvider:
         self.session.mount("http://", adapter)
 
         self._gold_token = None
+        self._gold_token_lock = threading.Lock()
 
     # ── Crypto (Binance) ───────────────────────────────────
 
@@ -150,8 +224,11 @@ class PriceProvider:
                 "quote_volume": float(d["quoteVolume"])
             }
             return price, change_pct, extra_info
-        except Exception:
-            return None, None, None
+        except requests.exceptions.HTTPError as e:
+            logger.warning("Crypto API HTTP error (%s): %s", sym, e)
+        except Exception as e:
+            logger.warning("Crypto API error (%s): %s", sym, e)
+        return None, None, None
 
     # ── P2P (Binance) ──────────────────────────────────────
 
@@ -165,6 +242,9 @@ class PriceProvider:
         }
         try:
             r = self.session.post(url, json=payload, timeout=API_TIMEOUT)
+            if r.status_code in (403, 429):
+                logger.warning("P2P API bị chặn/giới hạn (status=%s) cho %s", r.status_code, asset)
+                return None, None, None
             r.raise_for_status()
             res = r.json()
             if res.get("code") == "000000" and res.get("data"):
@@ -175,26 +255,27 @@ class PriceProvider:
                     "price": price
                 }
                 return price, None, extra_info
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("P2P API error (%s): %s", asset, e)
         return None, None, None
 
     # ── Vàng (vnappmob) ────────────────────────────────────
 
     def _refresh_gold_token(self):
-        """Làm mới Bearer token cho API vàng vnappmob."""
-        try:
-            r = self.session.get(
-                "https://api.vnappmob.com/api/request_api_key?scope=gold",
-                timeout=API_TIMEOUT, verify=False,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                if "results" in data:
-                    self._gold_token = data["results"]
-                    return True
-        except Exception:
-            pass
+        """Làm mới Bearer token cho API vàng vnappmob (thread-safe)."""
+        with self._gold_token_lock:
+            try:
+                r = self.session.get(
+                    "https://api.vnappmob.com/api/request_api_key?scope=gold",
+                    timeout=API_TIMEOUT, verify=False,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if "results" in data:
+                        self._gold_token = data["results"]
+                        return True
+            except Exception as e:
+                logger.warning("Không thể làm mới gold token: %s", e)
         return False
 
     def get_gold_price(self, symbol):
@@ -205,15 +286,19 @@ class PriceProvider:
             return None, None, None
 
         url = f"https://api.vnappmob.com/api/v2/gold/{sym}"
-        headers = {"Authorization": f"Bearer {self._gold_token}"}
 
         try:
+            with self._gold_token_lock:
+                token = self._gold_token
+            headers = {"Authorization": f"Bearer {token}"}
             r = self.session.get(url, headers=headers, timeout=API_TIMEOUT, verify=False)
 
             # Tự động refresh token nếu bị hết hạn (401)
             if r.status_code == 401:
                 if self._refresh_gold_token():
-                    headers["Authorization"] = f"Bearer {self._gold_token}"
+                    with self._gold_token_lock:
+                        token = self._gold_token
+                    headers["Authorization"] = f"Bearer {token}"
                     r = self.session.get(url, headers=headers, timeout=API_TIMEOUT, verify=False)
 
             if r.status_code == 200:
@@ -230,8 +315,10 @@ class PriceProvider:
                             "type": info.get("gold_type", "SJC")
                         }
                         return price, None, extra_info
-        except Exception:
-            pass
+            else:
+                logger.warning("Gold API trả về status=%s", r.status_code)
+        except Exception as e:
+            logger.warning("Gold API error (%s): %s", sym, e)
         return None, None, None
 
     # ── Chứng khoán (Yahoo Finance) ───────────────────────
@@ -253,8 +340,8 @@ class PriceProvider:
                     "volume": float(meta.get("regularMarketVolume", 0)) or None
                 }
                 return price, None, extra_info
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Stock API error (%s): %s", symbol, e)
         return None, None, None
 
     # ── Dispatch ───────────────────────────────────────────
@@ -287,15 +374,21 @@ class TickerApp:
         self._prices_lock = threading.Lock()
         self._reload_event = threading.Event()
         self.symbols = DEFAULT_SYMBOLS[:]
-        
+        self.theme = DEFAULT_THEME.copy()
+
         self.tooltip = Tooltip(self.root)
         self.symbol_widgets = {}
         self._settings_win = None
+        self._next_fetch = {}
+        self._last_rendered = {}
+        self._alert_state = {}
+        self._tray_icon = None
 
         self._load_and_apply_config()
         self._setup_ui()
         self._setup_context_menu()
         self._start_update_thread()
+        self._setup_tray()
 
     # ── Config ─────────────────────────────────────────────
 
@@ -306,11 +399,11 @@ class TickerApp:
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Không đọc được config.json: %s", e)
         return None
 
-    def _save_config(self, x=None, y=None, symbols=None):
+    def _save_config(self, x=None, y=None, symbols=None, theme=None):
         """Ghi cấu hình ra file JSON."""
         if x is None:
             x = self.root.winfo_x()
@@ -318,14 +411,19 @@ class TickerApp:
             y = self.root.winfo_y()
         if symbols is None:
             symbols = self.symbols
+        if theme is None:
+            theme = self.theme
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({"x": x, "y": y, "symbols": symbols}, f, ensure_ascii=False, indent=4)
-        except Exception:
-            pass
+                json.dump(
+                    {"x": x, "y": y, "symbols": symbols, "theme": theme},
+                    f, ensure_ascii=False, indent=4
+                )
+        except Exception as e:
+            logger.warning("Không ghi được config.json: %s", e)
 
     def _load_and_apply_config(self):
-        """Đọc config và áp dụng vị trí + danh sách symbols."""
+        """Đọc config và áp dụng vị trí + danh sách symbols + theme."""
         config = self._load_config()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
@@ -336,10 +434,11 @@ class TickerApp:
             self._x = config["x"]
             self._y = config["y"]
             self.symbols = config.get("symbols", DEFAULT_SYMBOLS)
+            self.theme = {**DEFAULT_THEME, **config.get("theme", {})}
         else:
             self._x = 180
             self._y = screen_h - self._height - 10
-            self._save_config(self._x, self._y, DEFAULT_SYMBOLS)
+            self._save_config(self._x, self._y, DEFAULT_SYMBOLS, DEFAULT_THEME)
 
     # ── UI Setup ───────────────────────────────────────────
 
@@ -349,10 +448,11 @@ class TickerApp:
         root.overrideredirect(True)
         root.configure(bg=TRANSPARENT_COLOR)
         root.attributes("-transparentcolor", TRANSPARENT_COLOR)
+        root.attributes("-alpha", self.theme.get("opacity", 1.0))
         root.geometry(f"{self._width}x{self._height}+{self._x}+{self._y}")
 
         # Trạng thái kéo thả
-        self._drag = {"x": 0, "y": 0, "win_x": 0, "win_y": 0}
+        self._drag = {"x": 0, "y": 0, "win_x": 0, "win_y": 0, "key": None, "moved": False}
 
         # Frame chứa tất cả các nhãn giá (cho phép hiển thị nhiều màu và hover)
         self.container_frame = tk.Frame(root, bg=TRANSPARENT_COLOR)
@@ -360,45 +460,107 @@ class TickerApp:
 
         # Gán sự kiện chuột kéo thả cho cả root và container frame
         for widget in (root, self.container_frame):
-            widget.bind("<ButtonPress-1>", self._on_drag_start)
-            widget.bind("<B1-Motion>", self._on_drag_motion)
-            widget.bind("<ButtonRelease-1>", self._on_drag_stop)
-            widget.bind("<Double-Button-1>", self._open_settings)
-            widget.bind("<Button-3>", self._show_context_menu)
+            self._bind_widget_events(widget)
 
         self._keep_on_top()
 
     def _setup_context_menu(self):
-        """Khởi tạo menu chuột phải."""
+        """Khởi tạo menu chuột phải (nền thanh giá)."""
         self._context_menu = tk.Menu(self.root, tearoff=0)
         self._context_menu.add_command(label="⚙ Cài đặt", command=self._open_settings)
         self._context_menu.add_command(label="🔄 Tải lại ngay", command=self._force_reload)
         self._context_menu.add_separator()
         self._context_menu.add_command(label="✕ Thoát", command=self._on_quit)
 
-    # ── Drag & Drop ────────────────────────────────────────
+    def _setup_tray(self):
+        """Khởi tạo icon khay hệ thống (tùy chọn, cần pystray + Pillow)."""
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            logger.info("pystray/Pillow chưa cài — bỏ qua tray icon (xem requirements.txt).")
+            return
 
-    def _on_drag_start(self, event):
+        try:
+            img = Image.new("RGB", (32, 32), "#1e1e2e")
+            draw = ImageDraw.Draw(img)
+            draw.text((8, 8), "$", fill="#a6e3a1")
+
+            menu = pystray.Menu(
+                pystray.MenuItem("Hiện / Ẩn", lambda: self.root.after(0, self._toggle_visibility)),
+                pystray.MenuItem("Tải lại ngay", lambda: self._force_reload()),
+                pystray.MenuItem("Thoát", lambda: self.root.after(0, self._on_quit)),
+            )
+            self._tray_icon = pystray.Icon("desktop_ticker_bar", img, "Desktop Ticker Bar", menu)
+            threading.Thread(target=self._tray_icon.run, daemon=True).start()
+        except Exception as e:
+            logger.warning("Không khởi tạo được tray icon: %s", e)
+            self._tray_icon = None
+
+    def _toggle_visibility(self):
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+        else:
+            self.root.withdraw()
+
+    # ── Bind sự kiện (thay cho việc lặp code + suy luận tên hàm bằng string) ──
+
+    def _bind_widget_events(self, widget, key=None):
+        """Gán toàn bộ sự kiện chuột cần thiết cho 1 widget.
+
+        ``key`` là mã ``type_symbol`` nếu widget thuộc về 1 mã cụ thể (item),
+        None nếu là vùng nền chung của thanh giá.
+        """
+        widget.bind("<ButtonPress-1>", lambda e: self._on_drag_start(e, key))
+        widget.bind("<B1-Motion>", self._on_drag_motion)
+        widget.bind("<ButtonRelease-1>", lambda e: self._on_drag_stop(e, key))
+        widget.bind("<Double-Button-1>", self._open_settings)
+        if key is not None:
+            widget.bind("<Button-3>", lambda e: self._show_item_context_menu(e, key))
+        else:
+            widget.bind("<Button-3>", self._show_context_menu)
+
+    # ── Drag & Drop / Click-to-open ────────────────────────
+
+    def _on_drag_start(self, event, key=None):
         self.root.lift()
         self.root.attributes("-topmost", True)
         self._drag["x"] = event.x_root
         self._drag["y"] = event.y_root
         self._drag["win_x"] = self.root.winfo_x()
         self._drag["win_y"] = self.root.winfo_y()
+        self._drag["key"] = key
+        self._drag["moved"] = False
         self.tooltip.hidetip()
 
     def _on_drag_motion(self, event):
         dx = event.x_root - self._drag["x"]
         dy = event.y_root - self._drag["y"]
+        if abs(dx) > CLICK_MOVE_THRESHOLD or abs(dy) > CLICK_MOVE_THRESHOLD:
+            self._drag["moved"] = True
         nx = self._drag["win_x"] + dx
         ny = self._drag["win_y"] + dy
         self.root.geometry(f"+{nx}+{ny}")
 
-    def _on_drag_stop(self, _event):
+    def _on_drag_stop(self, event, key=None):
         # Chỉ ghi config khi vị trí thực sự thay đổi
         if (self.root.winfo_x() != self._drag["win_x"]
                 or self.root.winfo_y() != self._drag["win_y"]):
             self._save_config()
+
+        # Nếu chuột gần như không di chuyển, coi đây là click -> mở link nguồn giá
+        if key is not None and not self._drag.get("moved", False):
+            self._open_source_link(key)
+
+    def _open_source_link(self, key):
+        symbol_type, symbol = key.split("_", 1)
+        builder = SOURCE_URLS.get(symbol_type)
+        if not builder:
+            return
+        try:
+            webbrowser.open(builder(symbol))
+        except Exception as e:
+            logger.warning("Không mở được link nguồn giá (%s): %s", key, e)
 
     # ── Context Menu ───────────────────────────────────────
 
@@ -409,14 +571,66 @@ class TickerApp:
         finally:
             self._context_menu.grab_release()
 
+    def _show_item_context_menu(self, event, key):
+        """Menu chuột phải riêng cho từng mã: di chuyển trái/phải, xóa."""
+        self.tooltip.hidetip()
+        idx = next((i for i, it in enumerate(self.symbols)
+                    if f"{it['type']}_{it['symbol']}" == key), None)
+        if idx is None:
+            self._show_context_menu(event)
+            return
+
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="⬅ Di chuyển trái", command=lambda: self._move_symbol(key, -1),
+                          state="normal" if idx > 0 else "disabled")
+        menu.add_command(label="➡ Di chuyển phải", command=lambda: self._move_symbol(key, 1),
+                          state="normal" if idx < len(self.symbols) - 1 else "disabled")
+        menu.add_command(label="🗑 Xóa mã", command=lambda: self._remove_symbol(key))
+        menu.add_separator()
+        menu.add_command(label="⚙ Cài đặt", command=self._open_settings)
+        menu.add_command(label="🔄 Tải lại ngay", command=self._force_reload)
+        menu.add_command(label="✕ Thoát", command=self._on_quit)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _move_symbol(self, key, direction):
+        """Di chuyển 1 mã sang trái (-1) hoặc phải (+1) trong danh sách hiển thị."""
+        idx = next((i for i, it in enumerate(self.symbols)
+                    if f"{it['type']}_{it['symbol']}" == key), None)
+        if idx is None:
+            return
+        new_idx = idx + direction
+        if not (0 <= new_idx < len(self.symbols)):
+            return
+        self.symbols[idx], self.symbols[new_idx] = self.symbols[new_idx], self.symbols[idx]
+        self._save_config()
+        self._render_symbols(dict(self._last_rendered))
+
+    def _remove_symbol(self, key):
+        """Xóa 1 mã khỏi danh sách hiển thị."""
+        self.symbols = [it for it in self.symbols if f"{it['type']}_{it['symbol']}" != key]
+        self._save_config()
+        if key in self.symbol_widgets:
+            self.symbol_widgets[key]["frame"].destroy()
+            del self.symbol_widgets[key]
+        self._last_rendered.pop(key, None)
+        self._render_symbols(dict(self._last_rendered))
+
     # ── Quit ───────────────────────────────────────────────
 
     def _on_quit(self):
-        """Thoát ứng dụng, đóng HTTP session đúng cách."""
+        """Thoát ứng dụng, đóng HTTP session và tray icon đúng cách."""
         try:
             self.provider.session.close()
         except Exception:
             pass
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
         self.root.destroy()
 
     # ── Keep on Top ────────────────────────────────────────
@@ -445,7 +659,8 @@ class TickerApp:
                 f"⭐ Binance Crypto: {symbol}\n"
                 f"📈 Cao nhất 24h : ${info['high']:,.2f}\n"
                 f"📉 Thấp nhất 24h: ${info['low']:,.2f}\n"
-                f"📊 Khối lượng    : {info['volume']:,.2f} {symbol}"
+                f"📊 Khối lượng    : {info['volume']:,.2f} {symbol}\n"
+                f"🖱️ Click để mở Binance"
             )
         elif t == "stock":
             high_str = f"{info['high']:,.0f}đ" if info.get("high") else "N/A"
@@ -455,7 +670,8 @@ class TickerApp:
                 f"📈 Chứng khoán: {symbol}\n"
                 f"🔺 Cao nhất ngày : {high_str}\n"
                 f"🔻 Thấp nhất ngày: {low_str}\n"
-                f"📊 Khối lượng    : {vol_str}"
+                f"📊 Khối lượng    : {vol_str}\n"
+                f"🖱️ Click để mở Yahoo Finance"
             )
         elif t == "gold":
             buy_str = f"{info['buy']:,.0f}đ" if info.get("buy") else "N/A"
@@ -469,7 +685,8 @@ class TickerApp:
             tip_text = (
                 f"🤝 Binance P2P: {symbol}\n"
                 f"💵 Giá {info['trade_type']}: {info['price']:,.0f} {info['fiat']}\n"
-                f"⚡ Thanh toán: Chuyển khoản ngân hàng"
+                f"⚡ Thanh toán: Chuyển khoản ngân hàng\n"
+                f"🖱️ Click để mở Binance P2P"
             )
 
         self.tooltip.showtip(tip_text, event.x_root, event.y_root)
@@ -481,6 +698,22 @@ class TickerApp:
         self.tooltip.hidetip()
 
     # ── Data Fetching & Rendering ──────────────────────────
+
+    def _check_alert(self, cache_key, item, price):
+        """Kiểm tra ngưỡng cảnh báo giá (alert_above/alert_below) nếu có cấu hình."""
+        above = item.get("alert_above")
+        below = item.get("alert_below")
+        if above is None and below is None:
+            return False
+
+        breached = (above is not None and price >= above) or (below is not None and price <= below)
+        prev = self._alert_state.get(cache_key, False)
+        self._alert_state[cache_key] = breached
+        if breached and not prev:
+            logger.info("Cảnh báo giá: %s đạt %.2f (ngưỡng trên=%s, dưới=%s)",
+                        cache_key, price, above, below)
+            return True
+        return False
 
     def _fetch_single(self, item):
         """Lấy giá cho 1 mã, có cache fallback khi lỗi mạng."""
@@ -507,43 +740,60 @@ class TickerApp:
                 price = cached["price"]
                 change_pct = cached.get("change_pct")
                 extra_info = cached.get("extra_info")
-            is_fallback = True
+                is_fallback = True
 
         if price is None:
-            return None
+            # Chưa từng lấy được dữ liệu và không có cache — vẫn hiển thị placeholder rõ ràng
+            return {
+                "key": cache_key,
+                "price_text": format_price_text(label_str, None, symbol_type, no_data=True),
+                "change_text": "",
+                "change_color": self.theme["fg"],
+                "alert": False,
+            }
 
-        # ── Format output ──
-        suffix = "*" if is_fallback else ""
-        if symbol_type == "crypto":
-            price_text = f"{label_str}:${price:,.0f}{suffix}"
-        else:
-            price_text = f"{label_str}:{price:,.0f}đ{suffix}"
+        alert = self._check_alert(cache_key, item, price)
 
-        # Định dạng text & màu sắc cho % thay đổi
-        change_text = ""
-        change_color = "white"
-        if change_pct is not None:
-            arrow = "▲" if change_pct >= 0 else "▼"
-            sign = "+" if change_pct >= 0 else ""
-            change_text = f"{arrow}{sign}{change_pct:.1f}%"
-            change_color = "#a6e3a1" if change_pct >= 0 else "#f38ba8"  # Xanh / Đỏ Catppuccin
+        price_text = format_price_text(label_str, price, symbol_type, is_fallback=is_fallback)
+        change_text, change_color = format_change_display(change_pct, self.theme)
 
         return {
             "key": cache_key,
             "price_text": price_text,
             "change_text": change_text,
-            "change_color": change_color
+            "change_color": change_color,
+            "alert": alert,
         }
+
+    def _flash_alert(self, frame):
+        """Highlight tạm thời nền của 1 mã khi có cảnh báo giá vượt ngưỡng."""
+        try:
+            frame.configure(bg=self.theme["alert_color"])
+            for child in frame.winfo_children():
+                child.configure(bg=self.theme["alert_color"])
+            self.root.after(ALERT_FLASH_MS, lambda: self._reset_flash(frame))
+        except Exception:
+            pass
+
+    def _reset_flash(self, frame):
+        try:
+            frame.configure(bg=TRANSPARENT_COLOR)
+            for child in frame.winfo_children():
+                child.configure(bg=TRANSPARENT_COLOR)
+        except Exception:
+            pass
 
     def _render_symbols(self, data_dict):
         """Dựng giao diện động cho các mã từ dữ liệu mới (không bị nhấp nháy)."""
         current_keys = {f"{item['type']}_{item['symbol']}" for item in self.symbols}
-        
+
         # Xóa các widget của mã không còn tồn tại trong config
         for key in list(self.symbol_widgets.keys()):
             if key not in current_keys:
                 self.symbol_widgets[key]["frame"].destroy()
                 del self.symbol_widgets[key]
+
+        font = (self.theme["font_family"], self.theme["font_size"])
 
         # Cập nhật hoặc tạo mới các widget con
         for i, item in enumerate(self.symbols):
@@ -555,31 +805,25 @@ class TickerApp:
             # Nếu chưa có widget, tiến hành tạo mới
             if key not in self.symbol_widgets:
                 frame = tk.Frame(self.container_frame, bg=TRANSPARENT_COLOR)
-                frame.pack(side="left", padx=0)
-
-                # Bind các sự kiện drag & drop và click chuột lên frame con
-                for event_name in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>", "<Double-Button-1>", "<Button-3>"):
-                    frame.bind(event_name, getattr(self, event_name.replace("<", "_on_").replace(">", "").replace("-", "_").lower(), None))
+                self._bind_widget_events(frame, key=key)
 
                 lbl_price = tk.Label(
-                    frame, fg="white", bg=TRANSPARENT_COLOR,
-                    font=("Consolas", 9), anchor="w"
+                    frame, fg=self.theme["fg"], bg=TRANSPARENT_COLOR,
+                    font=font, anchor="w"
                 )
                 lbl_price.pack(side="left")
-                for event_name in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>", "<Double-Button-1>", "<Button-3>"):
-                    lbl_price.bind(event_name, getattr(self, event_name.replace("<", "_on_").replace(">", "").replace("-", "_").lower(), None))
+                self._bind_widget_events(lbl_price, key=key)
 
                 lbl_change = tk.Label(
                     frame, bg=TRANSPARENT_COLOR,
-                    font=("Consolas", 9), anchor="w"
+                    font=font, anchor="w"
                 )
                 lbl_change.pack(side="left")
-                for event_name in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>", "<Double-Button-1>", "<Button-3>"):
-                    lbl_change.bind(event_name, getattr(self, event_name.replace("<", "_on_").replace(">", "").replace("-", "_").lower(), None))
+                self._bind_widget_events(lbl_change, key=key)
 
                 lbl_sep = tk.Label(
-                    frame, text="|", fg="#585b70", bg=TRANSPARENT_COLOR,
-                    font=("Consolas", 9)
+                    frame, text="|", fg=self.theme["separator_color"], bg=TRANSPARENT_COLOR,
+                    font=font
                 )
 
                 self.symbol_widgets[key] = {
@@ -598,7 +842,7 @@ class TickerApp:
             # Cập nhật văn bản
             widgets = self.symbol_widgets[key]
             widgets["lbl_price"].config(text=data["price_text"])
-            
+
             # Cập nhật % thay đổi (nếu có)
             if data["change_text"]:
                 widgets["lbl_change"].config(text=data["change_text"], fg=data["change_color"])
@@ -612,25 +856,44 @@ class TickerApp:
             else:
                 widgets["lbl_sep"].pack_forget()
 
+            if data.get("alert"):
+                self._flash_alert(widgets["frame"])
+
+        # Luôn re-pack theo đúng thứ tự self.symbols để hỗ trợ di chuyển trái/phải
+        for item in self.symbols:
+            key = f"{item['type']}_{item['symbol']}"
+            widgets = self.symbol_widgets.get(key)
+            if widgets:
+                widgets["frame"].pack_forget()
+                widgets["frame"].pack(side="left", padx=0)
+
     def _update_data(self):
-        """Vòng lặp cập nhật dữ liệu song song bằng ThreadPoolExecutor."""
+        """Vòng lặp cập nhật dữ liệu song song, mỗi loại tài sản có chu kỳ riêng."""
         with ThreadPoolExecutor(max_workers=5) as executor:
             while True:
-                futures = [executor.submit(self._fetch_single, item) for item in self.symbols]
+                now = time.time()
+                forced = self._reload_event.is_set()
+                due_items = []
+                for item in self.symbols:
+                    key = f"{item['type']}_{item['symbol']}"
+                    interval = TYPE_INTERVALS.get(item["type"], DEFAULT_UPDATE_INTERVAL)
+                    if forced or self._next_fetch.get(key, 0) <= now:
+                        due_items.append(item)
+                        self._next_fetch[key] = now + interval
 
-                data_dict = {}
-                for fut in futures:
-                    try:
-                        res = fut.result(timeout=7)
-                        if res:
-                            data_dict[res["key"]] = res
-                    except Exception:
-                        pass
+                if due_items:
+                    futures = [executor.submit(self._fetch_single, item) for item in due_items]
+                    for fut in futures:
+                        try:
+                            res = fut.result(timeout=7)
+                            if res:
+                                self._last_rendered[res["key"]] = res
+                        except Exception as e:
+                            logger.warning("Lỗi khi lấy dữ liệu: %s", e)
 
-                # Đẩy cập nhật UI an toàn lên Main Thread
-                self.root.after(0, lambda d=data_dict: self._render_symbols(d))
+                self.root.after(0, lambda d=dict(self._last_rendered): self._render_symbols(d))
 
-                self._reload_event.wait(UPDATE_INTERVAL)
+                self._reload_event.wait(TICK_INTERVAL)
                 self._reload_event.clear()
 
     def _force_reload(self):
@@ -643,10 +906,9 @@ class TickerApp:
     # ── Settings Window ────────────────────────────────────
 
     def _open_settings(self, _event=None):
-        """Mở cửa sổ chỉnh sửa danh sách mã hiển thị."""
+        """Mở cửa sổ chỉnh sửa danh sách mã hiển thị và các tùy chọn giao diện."""
         if self._settings_win is not None:
             try:
-                self._settings_win.lock()
                 self._settings_win.lift()
                 self._settings_win.focus_force()
                 return
@@ -657,7 +919,7 @@ class TickerApp:
 
         win = tk.Toplevel(self.root)
         win.title("Cài đặt mã hiển thị")
-        win.geometry("500x420")
+        win.geometry("500x520")
         win.attributes("-topmost", True)
         win.configure(bg="#1e1e2e")
         self._settings_win = win
@@ -672,7 +934,7 @@ class TickerApp:
 
         # Vùng soạn thảo JSON — Dark theme
         text_area = tk.Text(
-            win, height=16,
+            win, height=14,
             bg="#313244", fg="#a6e3a1", insertbackground="#cdd6f4",
             font=("Consolas", 10), relief="flat", padx=8, pady=8,
             selectbackground="#585b70", selectforeground="#cdd6f4",
@@ -683,9 +945,33 @@ class TickerApp:
         # Gợi ý format
         tk.Label(
             win,
-            text='type: crypto | p2p | gold | stock',
+            text=('type: crypto | p2p | gold | stock  '
+                  '(tùy chọn: "alert_above", "alert_below")'),
             font=("Consolas", 8), fg="#6c7086", bg="#1e1e2e",
-        ).pack(pady=(2, 0))
+        ).pack(pady=(2, 8))
+
+        # ── Tùy chọn giao diện (Theme) ──
+        theme_frame = tk.Frame(win, bg="#1e1e2e")
+        theme_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        tk.Label(theme_frame, text="Độ trong suốt:", font=("Consolas", 9),
+                 fg="#cdd6f4", bg="#1e1e2e").grid(row=0, column=0, sticky="w")
+        opacity_var = tk.DoubleVar(value=self.theme.get("opacity", 1.0))
+        opacity_scale = tk.Scale(
+            theme_frame, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
+            variable=opacity_var, bg="#1e1e2e", fg="#cdd6f4", highlightthickness=0,
+            troughcolor="#313244", length=200,
+        )
+        opacity_scale.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(theme_frame, text="Cỡ chữ:", font=("Consolas", 9),
+                 fg="#cdd6f4", bg="#1e1e2e").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        font_size_var = tk.IntVar(value=self.theme.get("font_size", 9))
+        font_size_spin = tk.Spinbox(
+            theme_frame, from_=7, to=16, textvariable=font_size_var, width=5,
+            bg="#313244", fg="#cdd6f4",
+        )
+        font_size_spin.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
 
         def save():
             raw = text_area.get("1.0", tk.END).strip()
@@ -693,7 +979,17 @@ class TickerApp:
                 new_symbols = json.loads(raw)
                 self._validate_symbols(new_symbols)
                 self.symbols = new_symbols
-                self._save_config(symbols=new_symbols)
+
+                self.theme["opacity"] = opacity_var.get()
+                self.theme["font_size"] = font_size_var.get()
+                self.root.attributes("-alpha", self.theme["opacity"])
+
+                # Áp dụng cỡ chữ mới: buộc tạo lại toàn bộ widget mã
+                for key, widgets in list(self.symbol_widgets.items()):
+                    widgets["frame"].destroy()
+                self.symbol_widgets.clear()
+
+                self._save_config(symbols=new_symbols, theme=self.theme)
                 self._close_settings_win(win)
                 self._force_reload()
             except Exception as e:
@@ -717,6 +1013,7 @@ class TickerApp:
         """Kiểm tra tính hợp lệ của cấu trúc JSON symbols."""
         if not isinstance(symbols, list):
             raise ValueError("Config phải là một danh sách dạng [ {...}, {...} ]")
+        seen = set()
         for i, item in enumerate(symbols, 1):
             if not isinstance(item, dict):
                 raise ValueError(f"Phần tử #{i} phải là object JSON, nhận được {type(item).__name__}")
@@ -728,6 +1025,12 @@ class TickerApp:
                     f"Phần tử #{i}: type '{item['type']}' không hợp lệ. "
                     f"Chọn: {', '.join(sorted(VALID_TYPES))}"
                 )
+            dedup_key = (item["type"], item["symbol"])
+            if dedup_key in seen:
+                raise ValueError(
+                    f"Phần tử #{i}: mã '{item['symbol']}' (type '{item['type']}') bị trùng lặp"
+                )
+            seen.add(dedup_key)
 
     # ── Entry Point ────────────────────────────────────────
 
