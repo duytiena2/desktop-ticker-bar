@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import time
 
 import pytest
 
@@ -10,10 +11,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ticker import (
     TickerApp,
+    PriceProvider,
+    vn_market_open,
     format_price_text,
     format_change_display,
     DEFAULT_THEME,
 )
+
+
+def _struct(wday, hour, minute):
+    """Dựng time.struct_time cho ngày trong tuần (0=T2) và giờ:phút cụ thể."""
+    return time.struct_time((2026, 9, 7, hour, minute, 0, wday, 1, 0))
 
 
 # ── Helpers ────────────────────────────────────────────────
@@ -179,3 +187,76 @@ def test_fetch_single_triggers_alert():
     item = {"type": "crypto", "symbol": "BTC", "label": "BTC", "alert_above": 70000}
     res = app._fetch_single(item)
     assert res["alert"] is True
+
+
+# ── vn_market_open ─────────────────────────────────────────
+
+def test_market_open_weekday_trading_hours():
+    assert vn_market_open(_struct(0, 10, 0)) is True   # T2 10:00
+
+
+def test_market_open_boundaries():
+    assert vn_market_open(_struct(4, 9, 0)) is True    # T6 09:00 (mở)
+    assert vn_market_open(_struct(4, 15, 0)) is True   # T6 15:00 (đóng cửa phiên, vẫn tính mở)
+
+
+def test_market_closed_before_and_after_hours():
+    assert vn_market_open(_struct(0, 8, 59)) is False
+    assert vn_market_open(_struct(0, 15, 1)) is False
+
+
+def test_market_closed_weekend():
+    assert vn_market_open(_struct(5, 10, 0)) is False   # T7
+    assert vn_market_open(_struct(6, 10, 0)) is False   # CN
+
+
+# ── PriceProvider.get_stock_price (fallback query1 -> query2) ──
+
+class _FakeResp:
+    def __init__(self, status, data=None):
+        self.status_code = status
+        self._data = data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._data
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.urls = []
+
+    def get(self, url, **kwargs):
+        self.urls.append(url)
+        return self._responses.pop(0)
+
+
+_VALID_CHART = {
+    "chart": {"result": [{"meta": {
+        "regularMarketPrice": 95000,
+        "regularMarketDayHigh": 96000,
+        "regularMarketDayLow": 94000,
+        "regularMarketVolume": 1000,
+    }}]}
+}
+
+
+def test_get_stock_price_falls_back_to_query2():
+    provider = PriceProvider()
+    provider.session = _FakeSession([_FakeResp(401), _FakeResp(200, _VALID_CHART)])
+    price, change, extra = provider.get_stock_price("FPT.VN")
+    assert price == 95000
+    assert len(provider.session.urls) == 2
+    assert "query1" in provider.session.urls[0]
+    assert "query2" in provider.session.urls[1]
+
+
+def test_get_stock_price_both_hosts_fail():
+    provider = PriceProvider()
+    provider.session = _FakeSession([_FakeResp(500), _FakeResp(500)])
+    price, change, extra = provider.get_stock_price("FPT.VN")
+    assert price is None

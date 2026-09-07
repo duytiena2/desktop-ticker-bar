@@ -118,6 +118,18 @@ def format_change_display(change_pct, theme=None):
     return text, color
 
 
+def vn_market_open(lt=None):
+    """True nếu đang trong giờ giao dịch sàn VN (Thứ 2–6, 09:00–15:00 giờ địa phương).
+
+    ``lt`` là ``time.struct_time`` (mặc định thời gian hiện tại) — tách ra để dễ test.
+    """
+    lt = lt or time.localtime()
+    if lt.tm_wday >= 5:  # 5 = Thứ 7, 6 = Chủ nhật
+        return False
+    minutes = lt.tm_hour * 60 + lt.tm_min
+    return 9 * 60 <= minutes <= 15 * 60
+
+
 # ═══════════════════════════════════════════════════════════
 #  Tooltip — Cửa sổ thông tin chi tiết khi Hover
 # ═══════════════════════════════════════════════════════════
@@ -334,24 +346,29 @@ class PriceProvider:
     # ── Chứng khoán (Yahoo Finance) ───────────────────────
 
     def get_stock_price(self, symbol):
-        """Lấy giá chứng khoán từ Yahoo Finance."""
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        try:
-            r = self.session.get(url, timeout=API_TIMEOUT)
-            r.raise_for_status()
-            data = r.json()
-            result = data["chart"]["result"]
-            if result:
-                meta = result[0]["meta"]
-                price = float(meta["regularMarketPrice"])
-                extra_info = {
-                    "high": float(meta.get("regularMarketDayHigh", 0)) or None,
-                    "low": float(meta.get("regularMarketDayLow", 0)) or None,
-                    "volume": float(meta.get("regularMarketVolume", 0)) or None
-                }
-                return price, None, extra_info
-        except Exception as e:
-            logger.warning("Stock API error (%s): %s", symbol, e)
+        """Lấy giá chứng khoán từ Yahoo Finance.
+
+        Thử lần lượt query1 rồi query2 — query1 đôi khi trả 401/cần crumb,
+        query2 thường vẫn phục vụ được.
+        """
+        for host in ("query1", "query2"):
+            url = f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}"
+            try:
+                r = self.session.get(url, timeout=API_TIMEOUT)
+                r.raise_for_status()
+                data = r.json()
+                result = data["chart"]["result"]
+                if result:
+                    meta = result[0]["meta"]
+                    price = float(meta["regularMarketPrice"])
+                    extra_info = {
+                        "high": float(meta.get("regularMarketDayHigh", 0)) or None,
+                        "low": float(meta.get("regularMarketDayLow", 0)) or None,
+                        "volume": float(meta.get("regularMarketVolume", 0)) or None
+                    }
+                    return price, None, extra_info
+            except Exception as e:
+                logger.warning("Stock API error (%s @ %s): %s", symbol, host, e)
         return None, None, None
 
     # ── Dispatch ───────────────────────────────────────────
@@ -904,14 +921,25 @@ class TickerApp:
 
                 # Chụp nhanh danh sách symbols để tránh race khi main thread sửa list
                 symbols_snapshot = list(self.symbols)
+                market_open = vn_market_open()
+                with self._prices_lock:
+                    cached_keys = set(self.last_prices.keys())
+
                 due_items = []
                 with self._state_lock:
                     for item in symbols_snapshot:
                         key = f"{item['type']}_{item['symbol']}"
                         interval = TYPE_INTERVALS.get(item["type"], DEFAULT_UPDATE_INTERVAL)
-                        if forced or self._next_fetch.get(key, 0) <= now:
-                            due_items.append(item)
+                        if not (forced or self._next_fetch.get(key, 0) <= now):
+                            continue
+                        # Ngoài giờ giao dịch: bỏ qua cập nhật CK sàn VN nếu đã có giá
+                        # đóng cửa trong cache (vẫn fetch lần đầu để lấy giá đóng cửa).
+                        if (item["type"] == "stock" and item["symbol"].endswith(".VN")
+                                and not market_open and not forced and key in cached_keys):
                             self._next_fetch[key] = now + interval
+                            continue
+                        due_items.append(item)
+                        self._next_fetch[key] = now + interval
 
                 if due_items:
                     futures = [executor.submit(self._fetch_single, item) for item in due_items]
