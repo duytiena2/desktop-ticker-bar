@@ -125,23 +125,31 @@ def format_change_display(change_pct, theme=None):
 class Tooltip:
     """Quản lý hiển thị cửa sổ Tooltip động theo con trỏ chuột."""
 
+    # Khoảng lệch (px) của tooltip so với con trỏ chuột
+    OFFSET_X = 15
+    OFFSET_Y = 15
+    OFFSET_Y_ABOVE = 95  # Lệch lên khi chuột ở nửa dưới màn hình (tránh bị cắt)
+
     def __init__(self, widget):
         self.widget = widget
         self.tipwindow = None
+
+    def _calc_pos(self, x_root, y_root):
+        """Tính vị trí tooltip; hiển thị phía trên chuột nếu ở nửa dưới màn hình."""
+        screen_h = self.widget.winfo_screenheight()
+        x = x_root + self.OFFSET_X
+        if y_root > screen_h / 2:
+            y = y_root - self.OFFSET_Y_ABOVE
+        else:
+            y = y_root + self.OFFSET_Y
+        return x, y
 
     def showtip(self, text, x_root, y_root):
         """Hiển thị Tooltip tại vị trí chuột."""
         if self.tipwindow or not text:
             return
 
-        # Nếu chuột nằm ở nửa dưới màn hình, hiển thị Tooltip phía trên chuột để tránh bị che
-        screen_h = self.widget.winfo_screenheight()
-        if y_root > screen_h / 2:
-            x = x_root + 15
-            y = y_root - 95
-        else:
-            x = x_root + 15
-            y = y_root + 15
+        x, y = self._calc_pos(x_root, y_root)
 
         self.tipwindow = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
@@ -161,13 +169,7 @@ class Tooltip:
     def movetip(self, x_root, y_root):
         """Di chuyển Tooltip theo chuột."""
         if self.tipwindow:
-            screen_h = self.widget.winfo_screenheight()
-            if y_root > screen_h / 2:
-                x = x_root + 15
-                y = y_root - 95
-            else:
-                x = x_root + 15
-                y = y_root + 15
+            x, y = self._calc_pos(x_root, y_root)
             self.tipwindow.wm_geometry(f"+{x}+{y}")
 
     def hidetip(self):
