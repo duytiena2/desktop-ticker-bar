@@ -27,6 +27,10 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "ticker.log")
 
 API_TIMEOUT = 5              # Thời gian chờ API tối đa (giây)
+# Session tự retry 1 lần (xem Retry ở PriceProvider) nên 1 request có thể kéo dài
+# tới ~2×API_TIMEOUT. Timeout của future phải lớn hơn để không bỏ future khi thread
+# nền vẫn đang chạy hợp lệ.
+FUTURE_TIMEOUT = API_TIMEOUT * 2 + 2
 DEFAULT_UPDATE_INTERVAL = 10  # Chu kỳ cập nhật mặc định (giây)
 TYPE_INTERVALS = {           # Chu kỳ cập nhật riêng theo loại tài sản (giây)
     "crypto": 10,
@@ -372,6 +376,9 @@ class TickerApp:
         self.provider = PriceProvider()
         self.last_prices = {}
         self._prices_lock = threading.Lock()
+        # Bảo vệ state chia sẻ giữa worker thread và main/UI thread:
+        # _next_fetch, _last_rendered, _alert_state.
+        self._state_lock = threading.Lock()
         self._reload_event = threading.Event()
         self.symbols = DEFAULT_SYMBOLS[:]
         self.theme = DEFAULT_THEME.copy()
@@ -604,9 +611,15 @@ class TickerApp:
         new_idx = idx + direction
         if not (0 <= new_idx < len(self.symbols)):
             return
-        self.symbols[idx], self.symbols[new_idx] = self.symbols[new_idx], self.symbols[idx]
+        # Tạo danh sách mới rồi gán lại (gán reference là atomic trong CPython),
+        # tránh sửa in-place gây race với worker thread đang lặp self.symbols.
+        new_symbols = list(self.symbols)
+        new_symbols[idx], new_symbols[new_idx] = new_symbols[new_idx], new_symbols[idx]
+        self.symbols = new_symbols
         self._save_config()
-        self._render_symbols(dict(self._last_rendered))
+        with self._state_lock:
+            snapshot = dict(self._last_rendered)
+        self._render_symbols(snapshot)
 
     def _remove_symbol(self, key):
         """Xóa 1 mã khỏi danh sách hiển thị."""
@@ -615,8 +628,10 @@ class TickerApp:
         if key in self.symbol_widgets:
             self.symbol_widgets[key]["frame"].destroy()
             del self.symbol_widgets[key]
-        self._last_rendered.pop(key, None)
-        self._render_symbols(dict(self._last_rendered))
+        with self._state_lock:
+            self._last_rendered.pop(key, None)
+            snapshot = dict(self._last_rendered)
+        self._render_symbols(snapshot)
 
     # ── Quit ───────────────────────────────────────────────
 
@@ -707,8 +722,9 @@ class TickerApp:
             return False
 
         breached = (above is not None and price >= above) or (below is not None and price <= below)
-        prev = self._alert_state.get(cache_key, False)
-        self._alert_state[cache_key] = breached
+        with self._state_lock:
+            prev = self._alert_state.get(cache_key, False)
+            self._alert_state[cache_key] = breached
         if breached and not prev:
             logger.info("Cảnh báo giá: %s đạt %.2f (ngưỡng trên=%s, dưới=%s)",
                         cache_key, price, above, below)
@@ -873,25 +889,36 @@ class TickerApp:
             while True:
                 now = time.time()
                 forced = self._reload_event.is_set()
+
+                # Chụp nhanh danh sách symbols để tránh race khi main thread sửa list
+                symbols_snapshot = list(self.symbols)
                 due_items = []
-                for item in self.symbols:
-                    key = f"{item['type']}_{item['symbol']}"
-                    interval = TYPE_INTERVALS.get(item["type"], DEFAULT_UPDATE_INTERVAL)
-                    if forced or self._next_fetch.get(key, 0) <= now:
-                        due_items.append(item)
-                        self._next_fetch[key] = now + interval
+                with self._state_lock:
+                    for item in symbols_snapshot:
+                        key = f"{item['type']}_{item['symbol']}"
+                        interval = TYPE_INTERVALS.get(item["type"], DEFAULT_UPDATE_INTERVAL)
+                        if forced or self._next_fetch.get(key, 0) <= now:
+                            due_items.append(item)
+                            self._next_fetch[key] = now + interval
 
                 if due_items:
                     futures = [executor.submit(self._fetch_single, item) for item in due_items]
+                    results = []
                     for fut in futures:
                         try:
-                            res = fut.result(timeout=7)
+                            res = fut.result(timeout=FUTURE_TIMEOUT)
                             if res:
-                                self._last_rendered[res["key"]] = res
+                                results.append(res)
                         except Exception as e:
                             logger.warning("Lỗi khi lấy dữ liệu: %s", e)
 
-                self.root.after(0, lambda d=dict(self._last_rendered): self._render_symbols(d))
+                    # Chỉ render khi thực sự có dữ liệu mới (bỏ render dư mỗi tick)
+                    if results:
+                        with self._state_lock:
+                            for res in results:
+                                self._last_rendered[res["key"]] = res
+                            snapshot = dict(self._last_rendered)
+                        self.root.after(0, lambda d=snapshot: self._render_symbols(d))
 
                 self._reload_event.wait(TICK_INTERVAL)
                 self._reload_event.clear()
