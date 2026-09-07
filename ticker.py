@@ -266,20 +266,24 @@ class PriceProvider:
     # ── Vàng (vnappmob) ────────────────────────────────────
 
     def _refresh_gold_token(self):
-        """Làm mới Bearer token cho API vàng vnappmob (thread-safe)."""
-        with self._gold_token_lock:
-            try:
-                r = self.session.get(
-                    "https://api.vnappmob.com/api/request_api_key?scope=gold",
-                    timeout=API_TIMEOUT, verify=False,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if "results" in data:
+        """Làm mới Bearer token cho API vàng vnappmob (thread-safe).
+
+        Gọi mạng NGOÀI lock để không chặn các luồng khác trong lúc chờ I/O;
+        chỉ khóa khi ghi token vào state.
+        """
+        try:
+            r = self.session.get(
+                "https://api.vnappmob.com/api/request_api_key?scope=gold",
+                timeout=API_TIMEOUT, verify=False,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if "results" in data:
+                    with self._gold_token_lock:
                         self._gold_token = data["results"]
-                        return True
-            except Exception as e:
-                logger.warning("Không thể làm mới gold token: %s", e)
+                    return True
+        except Exception as e:
+            logger.warning("Không thể làm mới gold token: %s", e)
         return False
 
     def get_gold_price(self, symbol):
@@ -389,6 +393,7 @@ class TickerApp:
         self._next_fetch = {}
         self._last_rendered = {}
         self._alert_state = {}
+        self._last_order_sig = None  # Chữ ký thứ tự lần render gần nhất (để tránh re-pack thừa)
         self._tray_icon = None
 
         self._load_and_apply_config()
@@ -810,6 +815,7 @@ class TickerApp:
                 del self.symbol_widgets[key]
 
         font = (self.theme["font_family"], self.theme["font_size"])
+        created_new = False
 
         # Cập nhật hoặc tạo mới các widget con
         for i, item in enumerate(self.symbols):
@@ -820,6 +826,7 @@ class TickerApp:
 
             # Nếu chưa có widget, tiến hành tạo mới
             if key not in self.symbol_widgets:
+                created_new = True
                 frame = tk.Frame(self.container_frame, bg=TRANSPARENT_COLOR)
                 self._bind_widget_events(frame, key=key)
 
@@ -875,13 +882,16 @@ class TickerApp:
             if data.get("alert"):
                 self._flash_alert(widgets["frame"])
 
-        # Luôn re-pack theo đúng thứ tự self.symbols để hỗ trợ di chuyển trái/phải
-        for item in self.symbols:
-            key = f"{item['type']}_{item['symbol']}"
-            widgets = self.symbol_widgets.get(key)
-            if widgets:
-                widgets["frame"].pack_forget()
-                widgets["frame"].pack(side="left", padx=0)
+        # Chỉ re-pack lại toàn bộ khi thứ tự thay đổi hoặc vừa tạo widget mới —
+        # tránh pack_forget/pack thừa mỗi lần cập nhật giá (giảm CPU & nhấp nháy).
+        order_sig = tuple(f"{item['type']}_{item['symbol']}" for item in self.symbols)
+        if created_new or order_sig != self._last_order_sig:
+            for key in order_sig:
+                widgets = self.symbol_widgets.get(key)
+                if widgets:
+                    widgets["frame"].pack_forget()
+                    widgets["frame"].pack(side="left", padx=0)
+            self._last_order_sig = order_sig
 
     def _update_data(self):
         """Vòng lặp cập nhật dữ liệu song song, mỗi loại tài sản có chu kỳ riêng."""
