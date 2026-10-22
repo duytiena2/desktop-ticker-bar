@@ -1308,6 +1308,12 @@ class TickerApp:
         self.symbol_widgets.clear()
         self._last_order_sig = None  # buộc re-pack ở lần render kế
 
+    def _rerender_now(self):
+        """Dựng lại ngay thanh giá từ dữ liệu đã render gần nhất (dùng cho live-preview)."""
+        with self._state_lock:
+            snap = dict(self._last_rendered)
+        self._render_symbols(snap)
+
     @staticmethod
     def _autostart_command():
         """Lệnh chạy khi khởi động Windows (ưu tiên pythonw.exe để ẩn console)."""
@@ -1380,6 +1386,9 @@ class TickerApp:
         win.attributes("-topmost", True)
         win.configure(bg=BASE)
         self._settings_win = win
+        # Chụp theme gốc để Hủy/đóng-không-lưu có thể hoàn tác live-preview
+        self._settings_orig_theme = dict(self.theme)
+        self._theme_committed = False
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_settings_win(win))
 
         LBL = {"bg": BASE, "fg": TEXT, "font": (UI, 9)}
@@ -1541,6 +1550,37 @@ class TickerApp:
         pady_var = tk.IntVar(value=self.theme.get("pad_y", 2))
         autostart_var = tk.BooleanVar(value=self._is_autostart_enabled())
 
+        # ── Live-preview: áp dụng ngay khi kéo/chọn, chưa ghi config ──
+        def preview_opacity(_=None):
+            try:
+                self.root.attributes("-alpha", float(opacity_var.get()))
+            except Exception:
+                pass
+
+        def preview_size(_=None):
+            self.theme["pad_x"] = int(padx_var.get())
+            self.theme["pad_y"] = int(pady_var.get())
+            try:
+                self.container_frame.pack_configure(padx=self.theme["pad_x"],
+                                                    pady=self.theme["pad_y"])
+                self._fit_window_to_content()
+            except Exception:
+                pass
+
+        def preview_appearance(*_):
+            self.theme["bg"] = bg_var.get()
+            self.theme["fg"] = fg_var.get()
+            self.theme["font_family"] = font_family_var.get()
+            try:
+                self.theme["font_size"] = int(font_size_var.get())
+            except Exception:
+                pass
+            try:
+                self._apply_theme()
+                self._rerender_now()
+            except Exception:
+                pass
+
         def make_swatch(parent, var):
             holder = tk.Frame(parent, bg=S0, highlightbackground=S2, highlightthickness=1)
             sw = tk.Frame(holder, bg=var.get() or "#000000", width=26, height=18)
@@ -1554,6 +1594,7 @@ class TickerApp:
                 if c and c[1]:
                     var.set(c[1])
                     sw.configure(bg=c[1])
+                    preview_appearance()
 
             for wdg in holder.winfo_children() + [holder]:
                 wdg.bind("<Button-1>", pick)
@@ -1574,6 +1615,7 @@ class TickerApp:
             fg_var.set(p["fg"]); fg_sw.configure(bg=p["fg"])
             self.theme["separator_color"] = p.get("separator_color",
                                                   self.theme.get("separator_color"))
+            preview_appearance()
 
         pom = tk.OptionMenu(tf, preset_var, *THEME_PRESETS.keys(), command=apply_preset)
         style_om(pom)
@@ -1589,32 +1631,32 @@ class TickerApp:
 
         families = list(dict.fromkeys([font_family_var.get()] + FONT_FAMILIES))
         tk.Label(tf, text="Font:", **LBL).grid(row=3, column=0, sticky="w", pady=4)
-        fom = tk.OptionMenu(tf, font_family_var, *families)
+        fom = tk.OptionMenu(tf, font_family_var, *families, command=lambda v: preview_appearance())
         style_om(fom)
         fom.grid(row=3, column=1, sticky="w", padx=(8, 0))
 
         tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=4, column=0, sticky="w", pady=4)
         tk.Spinbox(tf, from_=7, to=16, textvariable=font_size_var, width=5, relief="flat",
-                   bg=S0, fg=TEXT, buttonbackground=S1,
-                   insertbackground=TEXT).grid(row=4, column=1, sticky="w", padx=(8, 0))
+                   bg=S0, fg=TEXT, buttonbackground=S1, insertbackground=TEXT,
+                   command=preview_appearance).grid(row=4, column=1, sticky="w", padx=(8, 0))
 
         tk.Label(tf, text="Độ mờ:", **LBL).grid(row=5, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
                  variable=opacity_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_opacity).grid(row=5, column=1, sticky="w", padx=(8, 0))
 
         tk.Label(tf, text="Đệm ngang:", **LBL).grid(row=6, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0, to=40, resolution=1, orient="horizontal",
                  variable=padx_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8)).grid(row=6, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_size).grid(row=6, column=1, sticky="w", padx=(8, 0))
 
         tk.Label(tf, text="Đệm dọc (độ dày):", **LBL).grid(row=7, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0, to=24, resolution=1, orient="horizontal",
                  variable=pady_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8)).grid(row=7, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_size).grid(row=7, column=1, sticky="w", padx=(8, 0))
 
         tk.Checkbutton(tf, text="Khởi động cùng Windows", variable=autostart_var,
                        bg=BASE, fg=TEXT, selectcolor=S0, activebackground=BASE,
@@ -1643,6 +1685,7 @@ class TickerApp:
                 self._set_autostart(bool(autostart_var.get()))
 
                 self._save_config(symbols=new_symbols, theme=self.theme)
+                self._theme_committed = True  # đã lưu -> đóng không hoàn tác
                 self._close_settings_win(win)
                 self._force_reload()
             except Exception as e:
@@ -1663,7 +1706,17 @@ class TickerApp:
         hover(save_b, BLUE, BLUE_H)
 
     def _close_settings_win(self, win):
-        """Đóng cửa sổ settings và reset trạng thái."""
+        """Đóng cửa sổ settings; nếu chưa Lưu thì hoàn tác các thay đổi live-preview."""
+        orig = getattr(self, "_settings_orig_theme", None)
+        if orig is not None and not getattr(self, "_theme_committed", False):
+            self.theme = orig
+            try:
+                self._apply_theme()
+                self._rerender_now()
+            except Exception:
+                pass
+        self._settings_orig_theme = None
+        self._theme_committed = False
         self._settings_win = None
         win.destroy()
 
