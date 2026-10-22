@@ -140,6 +140,8 @@ pyinstaller --noconsole --onefile --name DesktopTickerBar ^
 ```
 Kết quả: `dist/DesktopTickerBar.exe` (có icon + thông tin phiên bản). *(PowerShell/CMD dùng `^` để xuống dòng.)*
 
+> 💡 **Giảm dung lượng**: cài [UPX](https://upx.github.io/) (`choco install upx`) trước khi build — PyInstaller tự nén `.exe` nhỏ hơn ~30–45% mà vẫn đủ tính năng. CI đã bật sẵn UPX cho bản Windows. *(macOS không nén UPX vì dễ hỏng binary.)*
+
 **Thủ công — macOS (.app):**
 ```bash
 pip install pyinstaller

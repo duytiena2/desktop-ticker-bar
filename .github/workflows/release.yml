@@ -29,7 +29,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+      - name: Cài UPX (để nén .exe nhỏ hơn)
+        run: choco install upx -y
       - name: Build .exe
+        # PyInstaller tự dùng UPX có trên PATH để nén -> file nhỏ hơn ~30-45%.
         run: >
           pyinstaller --noconsole --onefile --name DesktopTickerBar
           --icon assets/icon.ico --version-file assets/version_info.txt
@@ -69,8 +72,9 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       - name: Build .app
+        # Không dùng UPX trên macOS: dễ làm hỏng binary Mach-O / vướng Gatekeeper.
         run: >
-          pyinstaller --windowed --name DesktopTickerBar
+          pyinstaller --windowed --noupx --name DesktopTickerBar
           --icon assets/icon.icns
           --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets"
           ticker.py
