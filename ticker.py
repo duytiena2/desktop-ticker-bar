@@ -27,6 +27,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "ticker.log")
 
+
+def _resource(rel):
+    """Đường dẫn tài nguyên, hoạt động cả khi chạy từ .exe PyInstaller (onefile)."""
+    base = getattr(sys, "_MEIPASS", SCRIPT_DIR)
+    return os.path.join(base, rel)
+
+
+ICON_ICO = _resource(os.path.join("assets", "icon.ico"))
+ICON_PNG = _resource(os.path.join("assets", "icon.png"))
+
 API_TIMEOUT = 5              # Thời gian chờ API tối đa (giây)
 # Session tự retry 1 lần (xem Retry ở PriceProvider) nên 1 request có thể kéo dài
 # tới ~2×API_TIMEOUT. Timeout của future phải lớn hơn để không bỏ future khi thread
@@ -755,6 +765,10 @@ class TickerApp:
         root.attributes("-transparentcolor", TRANSPARENT_COLOR)
         root.attributes("-alpha", self.theme.get("opacity", 1.0))
         root.geometry(f"{self._width}x{self._height}+{self._x}+{self._y}")
+        try:
+            root.iconbitmap(ICON_ICO)  # icon cho taskbar/alt-tab (nếu có)
+        except Exception:
+            pass
 
         # Trạng thái kéo thả
         self._drag = {"x": 0, "y": 0, "win_x": self._x, "win_y": self._y, "dragging": False}
@@ -817,9 +831,12 @@ class TickerApp:
             return
 
         try:
-            img = Image.new("RGB", (32, 32), "#1e1e2e")
-            draw = ImageDraw.Draw(img)
-            draw.text((8, 8), "$", fill="#a6e3a1")
+            try:
+                img = Image.open(ICON_PNG)  # dùng icon app nếu có
+            except Exception:
+                img = Image.new("RGB", (32, 32), "#1e1e2e")
+                draw = ImageDraw.Draw(img)
+                draw.text((8, 8), "$", fill="#a6e3a1")
 
             menu = pystray.Menu(
                 pystray.MenuItem("Hiện / Ẩn", lambda: self.root.after(0, self._toggle_visibility)),
@@ -1422,6 +1439,10 @@ class TickerApp:
         win.attributes("-topmost", True)
         win.configure(bg=BASE)
         self._settings_win = win
+        try:
+            win.iconbitmap(ICON_ICO)
+        except Exception:
+            pass
         # Chụp theme gốc để Hủy/đóng-không-lưu có thể hoàn tác live-preview
         self._settings_orig_theme = dict(self.theme)
         self._theme_committed = False

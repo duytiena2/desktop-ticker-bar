@@ -124,10 +124,12 @@ Tạo một file `.exe` chạy độc lập (không cần cài Python) bằng [P
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconsole --onefile --name DesktopTickerBar ticker.py
+pyinstaller --noconsole --onefile --name DesktopTickerBar ^
+  --icon assets/icon.ico --version-file assets/version_info.txt ^
+  --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets" ticker.py
 ```
 
-File chạy nằm ở `dist/DesktopTickerBar.exe`. `--noconsole` để không hiện cửa sổ console đen.
+File chạy nằm ở `dist/DesktopTickerBar.exe` (đã có icon + thông tin phiên bản). `--noconsole` để không hiện cửa sổ console đen. *(Trên PowerShell/CMD dùng `^` để xuống dòng; gộp 1 dòng cũng được.)*
 
 ---
 

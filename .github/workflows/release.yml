@@ -27,7 +27,11 @@ jobs:
           pip install pyinstaller
 
       - name: Build .exe
-        run: pyinstaller --noconsole --onefile --name DesktopTickerBar ticker.py
+        run: >
+          pyinstaller --noconsole --onefile --name DesktopTickerBar
+          --icon assets/icon.ico --version-file assets/version_info.txt
+          --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets"
+          ticker.py
 
       # Khi chạy tay (workflow_dispatch): tải .exe dạng artifact để tự tải về.
       - name: Tải artifact
