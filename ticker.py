@@ -264,6 +264,38 @@ def default_label(symbol):
     return s or symbol
 
 
+def get_work_area():
+    """Vùng làm việc màn hình chính (ĐÃ trừ taskbar) trên Windows: (left, top, width, height).
+
+    Trả ``None`` nếu không lấy được (không phải Windows).
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        SPI_GETWORKAREA = 0x0030
+        rect = wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            if w > 0 and h > 0:
+                return rect.left, rect.top, w, h
+    except Exception:
+        pass
+    return None
+
+
+def choose_screen_bounds(primary_w, primary_h, virtual, work_area):
+    """Chọn vùng để kẹp/hít cửa sổ.
+
+    - Đa màn hình (virtual desktop lớn hơn màn chính): dùng virtual để kéo được sang màn phụ.
+    - Đơn màn hình: dùng work area để KHÔNG hít đè lên taskbar.
+    """
+    if virtual and (virtual[2] > primary_w + 1 or virtual[3] > primary_h + 1):
+        return virtual
+    if work_area:
+        return work_area
+    return virtual or (0, 0, primary_w, primary_h)
+
+
 def parse_symbol_rows(rows):
     """Chuyển danh sách dòng (chuỗi) từ form Settings thành list symbol dict.
 
@@ -700,11 +732,15 @@ class TickerApp:
             self._save_config(self._x, self._y, DEFAULT_SYMBOLS, DEFAULT_THEME)
 
     def _screen_bounds(self):
-        """(x, y, w, h) của vùng để kẹp cửa sổ — ưu tiên virtual desktop đa màn hình."""
-        vs = get_virtual_screen()
-        if vs:
-            return vs
-        return (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        """(x, y, w, h) vùng để kẹp/hít cửa sổ.
+
+        Đơn màn hình: work area (trừ taskbar) để không hít đè taskbar.
+        Đa màn hình: virtual desktop để kéo được sang màn phụ.
+        """
+        return choose_screen_bounds(
+            self.root.winfo_screenwidth(), self.root.winfo_screenheight(),
+            get_virtual_screen(), get_work_area(),
+        )
 
     # ── UI Setup ───────────────────────────────────────────
 

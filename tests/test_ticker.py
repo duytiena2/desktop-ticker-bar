@@ -16,6 +16,7 @@ from ticker import (
     calc_tooltip_pos,
     clamp_window_pos,
     snap_to_edges,
+    choose_screen_bounds,
     compute_bar_size,
     parse_symbol_rows,
     default_label,
@@ -432,6 +433,22 @@ def test_default_label_strips_prefix_and_suffix():
     assert default_label("FPT.VN") == "FPT"
     assert default_label("BTC") == "BTC"
     assert default_label("sjc") == "sjc"
+
+
+def test_choose_screen_bounds_single_monitor_uses_workarea():
+    # Đơn màn hình: virtual == màn chính -> dùng work area (chừa taskbar cao 48px)
+    wa = (0, 0, 1920, 1032)
+    assert choose_screen_bounds(1920, 1080, (0, 0, 1920, 1080), wa) == wa
+
+
+def test_choose_screen_bounds_multi_monitor_uses_virtual():
+    # Đa màn hình: virtual rộng hơn màn chính -> dùng virtual desktop
+    virt = (-1920, 0, 3840, 1080)
+    assert choose_screen_bounds(1920, 1080, virt, (0, 0, 1920, 1032)) == virt
+
+
+def test_choose_screen_bounds_fallback():
+    assert choose_screen_bounds(1920, 1080, None, None) == (0, 0, 1920, 1080)
 
 
 def test_compute_bar_size_adds_padding():
