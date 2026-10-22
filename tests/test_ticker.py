@@ -17,6 +17,9 @@ from ticker import (
     clamp_window_pos,
     snap_to_edges,
     parse_symbol_rows,
+    default_label,
+    SYMBOL_PRESETS,
+    VALID_TYPES,
     vn_market_open,
     format_crypto_usd,
     format_price_text,
@@ -419,4 +422,20 @@ def test_parse_symbol_rows_invalid_alert_raises():
              "alert_above": "abc", "alert_below": ""}]
     with pytest.raises(ValueError):
         parse_symbol_rows(rows)
+
+
+# ── default_label & SYMBOL_PRESETS ─────────────────────────
+
+def test_default_label_strips_prefix_and_suffix():
+    assert default_label("^VNINDEX.VN") == "VNINDEX"
+    assert default_label("FPT.VN") == "FPT"
+    assert default_label("BTC") == "BTC"
+    assert default_label("sjc") == "sjc"
+
+
+def test_symbol_presets_types_valid_and_nonempty():
+    assert set(SYMBOL_PRESETS.keys()) <= VALID_TYPES
+    for typ, syms in SYMBOL_PRESETS.items():
+        assert syms, f"{typ} không có mã gợi ý"
+        assert all(isinstance(s, str) and s for s in syms)
 

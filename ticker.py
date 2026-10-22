@@ -59,6 +59,16 @@ DEFAULT_SYMBOLS = [
     {"type": "stock", "symbol": "E1VFVN30.VN", "label": "VN30"},
 ]
 
+# Danh mục mã gợi ý để chọn nhanh trong Settings (người dùng vẫn gõ tay mã khác được).
+SYMBOL_PRESETS = {
+    "crypto": ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX",
+               "DOT", "LINK", "AVAX", "MATIC", "LTC", "SHIB"],
+    "p2p": ["USDT", "USDC", "BTC", "ETH", "BNB"],
+    "gold": ["sjc"],
+    "stock": ["^VNINDEX.VN", "E1VFVN30.VN", "FPT.VN", "VCB.VN", "VIC.VN",
+              "VHM.VN", "HPG.VN", "MWG.VN", "VNM.VN", "MSN.VN", "TCB.VN", "ACB.VN"],
+}
+
 DEFAULT_THEME = {
     "font_family": "Consolas",
     "font_size": 9,
@@ -236,6 +246,14 @@ def get_virtual_screen():
     except Exception:
         pass
     return None
+
+
+def default_label(symbol):
+    """Gợi ý nhãn gọn từ mã: bỏ dấu '^' đầu và đuôi '.VN' (vd ^VNINDEX.VN -> VNINDEX)."""
+    s = (symbol or "").lstrip("^")
+    if s.upper().endswith(".VN"):
+        s = s[:-3]
+    return s or symbol
 
 
 def parse_symbol_rows(rows):
@@ -866,7 +884,6 @@ class TickerApp:
                           state="normal" if idx > 0 else "disabled")
         menu.add_command(label="➡ Di chuyển phải", command=lambda: self._move_symbol(key, 1),
                           state="normal" if idx < len(self.symbols) - 1 else "disabled")
-        menu.add_command(label="🗑 Xóa mã", command=lambda: self._remove_symbol(key))
         menu.add_separator()
         menu.add_command(label="⚙ Cài đặt", command=self._open_settings)
         menu.add_command(label="🔄 Tải lại ngay", command=self._force_reload)
@@ -1335,44 +1352,80 @@ class TickerApp:
             except Exception:
                 self._settings_win = None
 
+        # ── Bảng màu (Catppuccin Mocha) ──
+        CRUST, BASE, S0, S1, S2 = "#181825", "#1e1e2e", "#313244", "#45475a", "#585b70"
+        TEXT, SUB, MUT = "#cdd6f4", "#a6adc8", "#6c7086"
+        BLUE, BLUE_H, GREEN, RED = "#89b4fa", "#b4befe", "#a6e3a1", "#f38ba8"
+        UI = "Segoe UI"
+
         win = tk.Toplevel(self.root)
         win.title("Cài đặt")
-        win.geometry("600x680")
+        win.geometry("640x700")
+        win.minsize(560, 560)
         win.attributes("-topmost", True)
-        win.configure(bg="#1e1e2e")
+        win.configure(bg=BASE)
         self._settings_win = win
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_settings_win(win))
 
-        LBL = {"bg": "#1e1e2e", "fg": "#cdd6f4", "font": ("Consolas", 9)}
-        ENT = {"bg": "#313244", "fg": "#cdd6f4", "insertbackground": "#cdd6f4",
-               "relief": "flat", "font": ("Consolas", 9)}
+        LBL = {"bg": BASE, "fg": TEXT, "font": (UI, 9)}
+        ENT = {"bg": S0, "fg": TEXT, "insertbackground": TEXT, "relief": "flat",
+               "font": ("Consolas", 9), "highlightthickness": 1,
+               "highlightbackground": S0, "highlightcolor": BLUE}
 
-        def _style_optionmenu(om, width=14):
-            om.configure(bg="#313244", fg="#cdd6f4", highlightthickness=0, relief="flat",
-                         activebackground="#585b70", font=("Consolas", 9), width=width)
-            om["menu"].configure(bg="#313244", fg="#cdd6f4")
+        def hover(w, normal, hot):
+            w.bind("<Enter>", lambda e: w.configure(bg=hot))
+            w.bind("<Leave>", lambda e: w.configure(bg=normal))
 
-        # ── Bảng danh sách mã ──
-        tk.Label(win, text="Danh sách mã hiển thị", font=("Consolas", 11, "bold"),
-                 fg="#cdd6f4", bg="#1e1e2e").pack(pady=(10, 4))
+        def style_om(om, width=14):
+            om.configure(bg=S0, fg=TEXT, highlightthickness=0, relief="flat",
+                         activebackground=S2, font=(UI, 9), width=width,
+                         anchor="w", indicatoron=True)
+            om["menu"].configure(bg=S0, fg=TEXT, activebackground=BLUE,
+                                 activeforeground=CRUST, relief="flat")
 
-        header = tk.Frame(win, bg="#1e1e2e")
-        header.pack(fill="x", padx=12)
-        for text, w in (("Loại", 8), ("Mã", 15), ("Nhãn", 11),
-                        ("Cảnh báo ≥", 12), ("Cảnh báo ≤", 12), ("", 3)):
-            tk.Label(header, text=text, width=w, anchor="w",
-                     fg="#9399b2", bg="#1e1e2e", font=("Consolas", 8)).pack(side="left", padx=1)
+        def section(parent, text):
+            tk.Label(parent, text=text, font=(UI, 9, "bold"), fg=SUB,
+                     bg=BASE, anchor="w").pack(fill="x", padx=14, pady=(12, 2))
+            tk.Frame(parent, height=1, bg=S0).pack(fill="x", padx=14, pady=(0, 4))
 
-        table_wrap = tk.Frame(win, bg="#1e1e2e")
-        table_wrap.pack(fill="both", expand=True, padx=12)
-        canvas = tk.Canvas(table_wrap, bg="#1e1e2e", highlightthickness=0, height=180)
+        def cfg_cols(fr):
+            fr.columnconfigure(0, minsize=84, weight=0)   # Loại
+            fr.columnconfigure(1, weight=3, uniform="d")  # Mã
+            fr.columnconfigure(2, weight=2, uniform="d")  # Nhãn
+            fr.columnconfigure(3, weight=2, uniform="d")  # ≥
+            fr.columnconfigure(4, weight=2, uniform="d")  # ≤
+            fr.columnconfigure(5, minsize=38, weight=0)   # xóa
+
+        # ── Tiêu đề ──
+        tk.Label(win, text="⚙  Cài đặt", font=(UI, 14, "bold"),
+                 fg=TEXT, bg=BASE, anchor="w").pack(fill="x", padx=14, pady=(12, 0))
+
+        # ── Mục: Danh sách mã ──
+        section(win, "DANH SÁCH MÃ HIỂN THỊ")
+
+        header = tk.Frame(win, bg=BASE)
+        header.pack(fill="x", padx=14)
+        cfg_cols(header)
+        for col, text in enumerate(("Loại", "Mã", "Nhãn", "Cảnh báo ≥", "Cảnh báo ≤", "")):
+            tk.Label(header, text=text, anchor="w", fg=MUT, bg=BASE,
+                     font=(UI, 8)).grid(row=0, column=col, sticky="w", padx=2)
+
+        table_wrap = tk.Frame(win, bg=BASE)
+        table_wrap.pack(fill="both", expand=True, padx=14)
+        canvas = tk.Canvas(table_wrap, bg=BASE, highlightthickness=0, height=170)
         vbar = tk.Scrollbar(table_wrap, orient="vertical", command=canvas.yview)
-        rows_frame = tk.Frame(canvas, bg="#1e1e2e")
+        rows_frame = tk.Frame(canvas, bg=BASE)
         rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+        win_item = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win_item, width=e.width))
         canvas.configure(yscrollcommand=vbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         vbar.pack(side="right", fill="y")
+
+        # Cuộn bằng con lăn chuột khi trỏ nằm trong bảng
+        canvas.bind("<Enter>", lambda e: canvas.bind_all(
+            "<MouseWheel>", lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units")))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
         rows = []
 
@@ -1381,8 +1434,9 @@ class TickerApp:
 
         def add_row(item=None):
             item = item or {}
-            rf = tk.Frame(rows_frame, bg="#1e1e2e")
+            rf = tk.Frame(rows_frame, bg=BASE)
             rf.pack(fill="x", pady=1)
+            cfg_cols(rf)
             type_var = tk.StringVar(value=item.get("type", "crypto"))
             sym_var = tk.StringVar(value=item.get("symbol", ""))
             lbl_var = tk.StringVar(value=item.get("label", ""))
@@ -1390,12 +1444,12 @@ class TickerApp:
             below_var = tk.StringVar(value=_as_str(item.get("alert_below")))
 
             om = tk.OptionMenu(rf, type_var, *sorted(VALID_TYPES))
-            _style_optionmenu(om, width=6)
-            om.pack(side="left", padx=1)
-            tk.Entry(rf, textvariable=sym_var, width=15, **ENT).pack(side="left", padx=1)
-            tk.Entry(rf, textvariable=lbl_var, width=11, **ENT).pack(side="left", padx=1)
-            tk.Entry(rf, textvariable=above_var, width=12, **ENT).pack(side="left", padx=1)
-            tk.Entry(rf, textvariable=below_var, width=12, **ENT).pack(side="left", padx=1)
+            style_om(om, width=6)
+            om.grid(row=0, column=0, sticky="ew", padx=2, pady=1)
+            tk.Entry(rf, textvariable=sym_var, **ENT).grid(row=0, column=1, sticky="ew", padx=2)
+            tk.Entry(rf, textvariable=lbl_var, **ENT).grid(row=0, column=2, sticky="ew", padx=2)
+            tk.Entry(rf, textvariable=above_var, **ENT).grid(row=0, column=3, sticky="ew", padx=2)
+            tk.Entry(rf, textvariable=below_var, **ENT).grid(row=0, column=4, sticky="ew", padx=2)
 
             row = {"frame": rf, "type": type_var, "symbol": sym_var, "label": lbl_var,
                    "above": above_var, "below": below_var, "alive": True}
@@ -1404,24 +1458,64 @@ class TickerApp:
                 row["alive"] = False
                 rf.destroy()
 
-            tk.Button(rf, text="🗑", command=remove, bg="#45475a", fg="#f38ba8",
-                      relief="flat", cursor="hand2", width=2).pack(side="left", padx=1)
+            db = tk.Button(rf, text="🗑", command=remove, bg=S1, fg=RED,
+                           relief="flat", cursor="hand2", width=2, bd=0)
+            db.grid(row=0, column=5, padx=2)
+            hover(db, S1, S2)
             rows.append(row)
 
         for it in self.symbols:
             add_row(it)
 
-        tk.Button(win, text="➕ Thêm mã", command=lambda: add_row(),
-                  bg="#45475a", fg="#a6e3a1", relief="flat", cursor="hand2",
-                  font=("Consolas", 9)).pack(pady=(6, 2))
-        tk.Label(win, text="Bỏ trống ô Cảnh báo nếu không dùng. Nhãn trống sẽ lấy theo Mã.",
-                 font=("Consolas", 8), fg="#6c7086", bg="#1e1e2e").pack()
+        # ── Thêm nhanh từ danh mục gợi ý ──
+        picker = tk.Frame(win, bg=BASE)
+        picker.pack(fill="x", padx=14, pady=(6, 0))
+        tk.Label(picker, text="Thêm nhanh:", bg=BASE, fg=SUB, font=(UI, 9)).pack(side="left")
+        pick_type = tk.StringVar(value="crypto")
+        pick_sym = tk.StringVar(value=SYMBOL_PRESETS["crypto"][0])
 
-        # ── Giao diện (Theme) ──
-        tk.Label(win, text="Giao diện", font=("Consolas", 11, "bold"),
-                 fg="#cdd6f4", bg="#1e1e2e").pack(pady=(10, 4))
-        tf = tk.Frame(win, bg="#1e1e2e")
-        tf.pack(fill="x", padx=12)
+        pt_om = tk.OptionMenu(picker, pick_type, *sorted(VALID_TYPES),
+                              command=lambda v: refresh_syms())
+        style_om(pt_om, width=7)
+        pt_om.pack(side="left", padx=(6, 4))
+        ps_om = tk.OptionMenu(picker, pick_sym, *SYMBOL_PRESETS["crypto"])
+        style_om(ps_om, width=14)
+        ps_om.pack(side="left", padx=4)
+
+        def refresh_syms():
+            syms = SYMBOL_PRESETS.get(pick_type.get(), [])
+            m = ps_om["menu"]
+            m.delete(0, "end")
+            for s in syms:
+                m.add_command(label=s, command=lambda v=s: pick_sym.set(v))
+            pick_sym.set(syms[0] if syms else "")
+
+        def add_from_picker():
+            s = pick_sym.get().strip()
+            if not s:
+                return
+            add_row({"type": pick_type.get(), "symbol": s, "label": default_label(s)})
+            win.update_idletasks()
+            canvas.yview_moveto(1.0)
+
+        ab = tk.Button(picker, text="➕ Thêm", command=add_from_picker, bg=S1, fg=GREEN,
+                       relief="flat", cursor="hand2", font=(UI, 9), bd=0, padx=10)
+        ab.pack(side="left", padx=4)
+        hover(ab, S1, S2)
+
+        ab2 = tk.Button(picker, text="＋ Dòng trống", command=lambda: add_row(), bg=BASE,
+                        fg=MUT, relief="flat", cursor="hand2", font=(UI, 9), bd=0)
+        ab2.pack(side="left", padx=4)
+
+        tk.Label(win, text="Bỏ trống ô Cảnh báo nếu không dùng · Nhãn trống sẽ lấy theo Mã · "
+                           "Xóa mã tại đây (không còn ở menu chuột phải).",
+                 font=(UI, 8), fg=MUT, bg=BASE, anchor="w", justify="left",
+                 wraplength=600).pack(fill="x", padx=14, pady=(4, 0))
+
+        # ── Mục: Giao diện ──
+        section(win, "GIAO DIỆN")
+        tf = tk.Frame(win, bg=BASE)
+        tf.pack(fill="x", padx=14)
 
         bg_var = tk.StringVar(value=self.theme.get("bg", "#11111b"))
         fg_var = tk.StringVar(value=self.theme.get("fg", "white"))
@@ -1430,66 +1524,73 @@ class TickerApp:
         font_size_var = tk.IntVar(value=self.theme.get("font_size", 9))
         autostart_var = tk.BooleanVar(value=self._is_autostart_enabled())
 
-        def _swatch(btn, color):
-            try:
-                btn.configure(bg=color)
-            except Exception:
-                pass
+        def make_swatch(parent, var):
+            holder = tk.Frame(parent, bg=S0, highlightbackground=S2, highlightthickness=1)
+            sw = tk.Frame(holder, bg=var.get() or "#000000", width=26, height=18)
+            sw.pack(side="left", padx=2, pady=2)
+            sw.pack_propagate(False)
+            tk.Label(holder, textvariable=var, bg=S0, fg=TEXT, font=("Consolas", 9),
+                     width=9, anchor="w").pack(side="left", padx=(4, 6))
 
-        def pick_color(var, btn):
-            c = colorchooser.askcolor(color=var.get(), parent=win)
-            if c and c[1]:
-                var.set(c[1])
-                _swatch(btn, c[1])
+            def pick(_e=None):
+                c = colorchooser.askcolor(color=var.get(), parent=win)
+                if c and c[1]:
+                    var.set(c[1])
+                    sw.configure(bg=c[1])
 
-        tk.Label(tf, text="Preset:", **LBL).grid(row=0, column=0, sticky="w", pady=3)
+            for wdg in holder.winfo_children() + [holder]:
+                wdg.bind("<Button-1>", pick)
+                try:
+                    wdg.configure(cursor="hand2")
+                except Exception:
+                    pass
+            return holder, sw
+
+        tk.Label(tf, text="Preset:", **LBL).grid(row=0, column=0, sticky="w", pady=4)
         preset_var = tk.StringVar(value="— chọn —")
 
         def apply_preset(name):
             p = THEME_PRESETS.get(name)
             if not p:
                 return
-            bg_var.set(p["bg"]); _swatch(bg_btn, p["bg"])
-            fg_var.set(p["fg"]); _swatch(fg_btn, p["fg"])
+            bg_var.set(p["bg"]); bg_sw.configure(bg=p["bg"])
+            fg_var.set(p["fg"]); fg_sw.configure(bg=p["fg"])
             self.theme["separator_color"] = p.get("separator_color",
                                                   self.theme.get("separator_color"))
 
         pom = tk.OptionMenu(tf, preset_var, *THEME_PRESETS.keys(), command=apply_preset)
-        _style_optionmenu(pom)
+        style_om(pom)
         pom.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Màu nền:", **LBL).grid(row=1, column=0, sticky="w", pady=3)
-        bg_btn = tk.Button(tf, width=8, relief="flat", cursor="hand2",
-                           command=lambda: pick_color(bg_var, bg_btn))
-        _swatch(bg_btn, bg_var.get())
-        bg_btn.grid(row=1, column=1, sticky="w", padx=(8, 0))
+        tk.Label(tf, text="Màu nền:", **LBL).grid(row=1, column=0, sticky="w", pady=4)
+        bg_holder, bg_sw = make_swatch(tf, bg_var)
+        bg_holder.grid(row=1, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Màu chữ:", **LBL).grid(row=2, column=0, sticky="w", pady=3)
-        fg_btn = tk.Button(tf, width=8, relief="flat", cursor="hand2",
-                           command=lambda: pick_color(fg_var, fg_btn))
-        _swatch(fg_btn, fg_var.get())
-        fg_btn.grid(row=2, column=1, sticky="w", padx=(8, 0))
+        tk.Label(tf, text="Màu chữ:", **LBL).grid(row=2, column=0, sticky="w", pady=4)
+        fg_holder, fg_sw = make_swatch(tf, fg_var)
+        fg_holder.grid(row=2, column=1, sticky="w", padx=(8, 0))
 
         families = list(dict.fromkeys([font_family_var.get()] + FONT_FAMILIES))
-        tk.Label(tf, text="Font:", **LBL).grid(row=3, column=0, sticky="w", pady=3)
+        tk.Label(tf, text="Font:", **LBL).grid(row=3, column=0, sticky="w", pady=4)
         fom = tk.OptionMenu(tf, font_family_var, *families)
-        _style_optionmenu(fom)
+        style_om(fom)
         fom.grid(row=3, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=4, column=0, sticky="w", pady=3)
-        tk.Spinbox(tf, from_=7, to=16, textvariable=font_size_var, width=5,
-                   bg="#313244", fg="#cdd6f4").grid(row=4, column=1, sticky="w", padx=(8, 0))
+        tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=4, column=0, sticky="w", pady=4)
+        tk.Spinbox(tf, from_=7, to=16, textvariable=font_size_var, width=5, relief="flat",
+                   bg=S0, fg=TEXT, buttonbackground=S1,
+                   insertbackground=TEXT).grid(row=4, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Độ mờ:", **LBL).grid(row=5, column=0, sticky="w", pady=3)
+        tk.Label(tf, text="Độ mờ:", **LBL).grid(row=5, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
-                 variable=opacity_var, bg="#1e1e2e", fg="#cdd6f4", highlightthickness=0,
-                 troughcolor="#313244", length=200).grid(row=5, column=1, sticky="w", padx=(8, 0))
+                 variable=opacity_var, bg=BASE, fg=TEXT, highlightthickness=0,
+                 troughcolor=S0, activebackground=BLUE, length=210,
+                 font=(UI, 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
 
         tk.Checkbutton(tf, text="Khởi động cùng Windows", variable=autostart_var,
-                       bg="#1e1e2e", fg="#cdd6f4", selectcolor="#313244",
-                       activebackground="#1e1e2e", activeforeground="#cdd6f4",
-                       font=("Consolas", 9)).grid(row=6, column=0, columnspan=2,
-                                                   sticky="w", pady=(6, 0))
+                       bg=BASE, fg=TEXT, selectcolor=S0, activebackground=BASE,
+                       activeforeground=TEXT, font=(UI, 9)).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         def save():
             try:
@@ -1516,12 +1617,19 @@ class TickerApp:
             except Exception as e:
                 messagebox.showerror("Lỗi", str(e), parent=win)
 
-        tk.Button(
-            win, text="💾 Lưu cấu hình", command=save,
-            bg="#89b4fa", fg="#1e1e2e", activebackground="#74c7ec",
-            font=("Arial", 10, "bold"), relief="flat", padx=20, pady=5,
-            cursor="hand2",
-        ).pack(pady=12)
+        # ── Thanh nút dưới cùng ──
+        btnbar = tk.Frame(win, bg=BASE)
+        btnbar.pack(fill="x", padx=14, pady=12)
+        cancel_b = tk.Button(btnbar, text="Hủy", command=lambda: self._close_settings_win(win),
+                             bg=S1, fg=TEXT, relief="flat", cursor="hand2",
+                             font=(UI, 9), padx=16, pady=6, bd=0)
+        cancel_b.pack(side="right", padx=(8, 0))
+        hover(cancel_b, S1, S2)
+        save_b = tk.Button(btnbar, text="💾  Lưu cấu hình", command=save,
+                           bg=BLUE, fg=CRUST, relief="flat", cursor="hand2",
+                           font=(UI, 10, "bold"), padx=20, pady=6, bd=0)
+        save_b.pack(side="right")
+        hover(save_b, BLUE, BLUE_H)
 
     def _close_settings_win(self, win):
         """Đóng cửa sổ settings và reset trạng thái."""
