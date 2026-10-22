@@ -4,7 +4,7 @@ Hỗ trợ: Crypto (Binance), P2P (Binance), Vàng SJC (vnappmob), Chứng khoá
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, colorchooser
 import requests
 from requests.adapters import HTTPAdapter
 import urllib3
@@ -12,6 +12,7 @@ from urllib3.util.retry import Retry
 import threading
 import json
 import os
+import sys
 import time
 import logging
 import webbrowser
@@ -40,8 +41,10 @@ TYPE_INTERVALS = {           # Chu kỳ cập nhật riêng theo loại tài s�
 }
 TICK_INTERVAL = 5            # Nhịp kiểm tra "đến hạn cập nhật" của vòng lặp chính
 KEEP_ON_TOP_INTERVAL = 2000  # Chu kỳ giữ cửa sổ ở trên cùng (ms)
+SNAP_THRESHOLD = 20          # Khoảng cách (px) để tự hít vào mép màn hình khi kéo
+AUTOSTART_NAME = "DesktopTickerBar"  # Tên value trong HKCU\...\Run (khởi động cùng Windows)
+AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 TRANSPARENT_COLOR = "#000001"
-CLICK_MOVE_THRESHOLD = 4     # Ngưỡng (px) để phân biệt "click" và "kéo thả"
 ALERT_FLASH_MS = 3000        # Thời gian highlight khi có cảnh báo giá (ms)
 
 REQUIRED_KEYS = {"type", "symbol", "label"}
@@ -59,6 +62,9 @@ DEFAULT_SYMBOLS = [
 DEFAULT_THEME = {
     "font_family": "Consolas",
     "font_size": 9,
+    # Nền đặc để kéo được thanh ở mọi chỗ (đặt = TRANSPARENT_COLOR nếu muốn nền
+    # trong suốt hoàn toàn như cũ — nhưng khi đó chỉ kéo được khi bấm trúng chữ).
+    "bg": "#11111b",
     "fg": "white",
     "positive_color": "#a6e3a1",
     "negative_color": "#f38ba8",
@@ -67,7 +73,18 @@ DEFAULT_THEME = {
     "opacity": 1.0,
 }
 
-# Đường dẫn mở khi click (không kéo) vào một mã trên thanh giá
+# Preset theme chọn nhanh trong Settings (preset "Trong suốt" dùng lại TRANSPARENT_COLOR
+# để ai thích kiểu "chữ nổi" không nền như bản gốc).
+THEME_PRESETS = {
+    "Tối (Mocha)": {"bg": "#11111b", "fg": "#cdd6f4", "separator_color": "#585b70"},
+    "Sáng (Light)": {"bg": "#eff1f5", "fg": "#4c4f69", "separator_color": "#9ca0b0"},
+    "Trong suốt": {"bg": TRANSPARENT_COLOR, "fg": "#ffffff", "separator_color": "#585b70"},
+}
+
+# Danh sách font gợi ý trong Settings (ưu tiên monospace cho bảng giá thẳng cột).
+FONT_FAMILIES = ["Consolas", "Cascadia Mono", "Courier New", "Segoe UI", "Tahoma", "Arial", "Verdana"]
+
+# Đường dẫn trang nguồn giá của từng loại tài sản (mở qua menu chuột phải)
 SOURCE_URLS = {
     "crypto": lambda sym: f"https://www.binance.com/en/trade/{sym}_USDT",
     "p2p": lambda sym: f"https://p2p.binance.com/en/trade/all-payments/{sym}?fiat=VND",
@@ -96,13 +113,27 @@ logger = _setup_logger()
 #  Hàm thuần túy (dễ unit test, không phụ thuộc Tkinter)
 # ═══════════════════════════════════════════════════════════
 
+def format_crypto_usd(price):
+    """Định dạng số USD cho crypto theo độ lớn để không làm tròn mất số lẻ với coin giá nhỏ."""
+    abs_p = abs(price)
+    if abs_p == 0:
+        return "0"
+    if abs_p >= 100:
+        return f"{price:,.0f}"
+    if abs_p >= 1:
+        return f"{price:,.2f}"
+    if abs_p >= 0.01:
+        return f"{price:,.4f}"
+    return f"{price:,.6f}"
+
+
 def format_price_text(label, price, symbol_type, is_fallback=False, no_data=False):
     """Định dạng chuỗi hiển thị giá cho một mã."""
     if no_data:
         return f"{label}:--"
     suffix = "*" if is_fallback else ""
     if symbol_type == "crypto":
-        return f"{label}:${price:,.0f}{suffix}"
+        return f"{label}:${format_crypto_usd(price)}{suffix}"
     return f"{label}:{price:,.0f}đ{suffix}"
 
 
@@ -130,66 +161,232 @@ def vn_market_open(lt=None):
     return 9 * 60 <= minutes <= 15 * 60
 
 
+def calc_tooltip_pos(
+    x_root,
+    y_root,
+    screen_w,
+    screen_h,
+    tip_w=0,
+    tip_h=0,
+    offset_x=15,
+    offset_y=15,
+    offset_y_above=95,
+    screen_margin=8,
+):
+    """Tính tọa độ (x, y) cho Tooltip, tự động lật/kẹp để không tràn mép phải/dưới màn hình."""
+    x = x_root + offset_x
+    if tip_w > 0 and x + tip_w + screen_margin > screen_w:
+        x = max(screen_margin, x_root - tip_w - offset_x)
+
+    if y_root > screen_h / 2 or (tip_h > 0 and y_root + offset_y + tip_h + screen_margin > screen_h):
+        above_offset = (tip_h + offset_y) if tip_h > 0 else offset_y_above
+        y = max(screen_margin, y_root - above_offset)
+    else:
+        y = y_root + offset_y
+    return x, y
+
+
+def clamp_window_pos(x, y, win_w, win_h, screen_w, screen_h, screen_x=0, screen_y=0):
+    """Kẹp tọa độ (x, y) để thanh giá luôn nằm gọn trong vùng màn hình.
+
+    ``screen_x``/``screen_y`` là gốc của vùng (mặc định 0,0 = màn hình chính). Khi
+    truyền gốc âm/offset của virtual desktop, hàm hỗ trợ cả cấu hình đa màn hình.
+    """
+    max_x = max(screen_x, screen_x + screen_w - win_w)
+    max_y = max(screen_y, screen_y + screen_h - win_h)
+    clamped_x = max(screen_x, min(int(x), max_x))
+    clamped_y = max(screen_y, min(int(y), max_y))
+    return clamped_x, clamped_y
+
+
+def snap_to_edges(x, y, win_w, win_h, screen_x, screen_y, screen_w, screen_h,
+                  threshold=SNAP_THRESHOLD):
+    """Tự "hít" cửa sổ vào mép màn hình gần nhất nếu đang cách mép <= threshold px.
+
+    Giúp canh thẳng thanh giá theo mép trên/dưới/trái/phải khi thả chuột.
+    """
+    right = screen_x + screen_w
+    bottom = screen_y + screen_h
+    if abs(x - screen_x) <= threshold:
+        x = screen_x
+    elif abs((x + win_w) - right) <= threshold:
+        x = right - win_w
+    if abs(y - screen_y) <= threshold:
+        y = screen_y
+    elif abs((y + win_h) - bottom) <= threshold:
+        y = bottom - win_h
+    return x, y
+
+
+def get_virtual_screen():
+    """Trả về (left, top, width, height) của toàn bộ desktop ảo (gộp mọi màn hình) trên Windows.
+
+    Trả ``None`` nếu không lấy được (không phải Windows) để caller fallback về màn hình chính.
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        # SM_XVIRTUALSCREEN=76, SM_YVIRTUALSCREEN=77, SM_CXVIRTUALSCREEN=78, SM_CYVIRTUALSCREEN=79
+        left = user32.GetSystemMetrics(76)
+        top = user32.GetSystemMetrics(77)
+        width = user32.GetSystemMetrics(78)
+        height = user32.GetSystemMetrics(79)
+        if width > 0 and height > 0:
+            return left, top, width, height
+    except Exception:
+        pass
+    return None
+
+
+def parse_symbol_rows(rows):
+    """Chuyển danh sách dòng (chuỗi) từ form Settings thành list symbol dict.
+
+    - Bỏ qua dòng trống hoàn toàn.
+    - ``label`` rỗng sẽ mặc định bằng ``symbol``.
+    - ``alert_above``/``alert_below`` nếu có phải là số (cho phép dấu phẩy ngăn cách).
+    Ném ``ValueError`` nếu ô cảnh báo không phải số hợp lệ.
+    """
+    result = []
+    for i, r in enumerate(rows, 1):
+        typ = (r.get("type") or "").strip()
+        sym = (r.get("symbol") or "").strip()
+        label = (r.get("label") or "").strip()
+        a_above = (r.get("alert_above") or "").strip()
+        a_below = (r.get("alert_below") or "").strip()
+
+        if not sym and not label and not a_above and not a_below:
+            continue  # dòng trống -> bỏ
+
+        item = {"type": typ, "symbol": sym, "label": label or sym}
+        for field, raw in (("alert_above", a_above), ("alert_below", a_below)):
+            if raw:
+                try:
+                    item[field] = float(raw.replace(",", ""))
+                except ValueError:
+                    raise ValueError(f"Dòng #{i}: '{field}' phải là số (nhận '{raw}')")
+        result.append(item)
+    return result
+
+
 # ═══════════════════════════════════════════════════════════
 #  Tooltip — Cửa sổ thông tin chi tiết khi Hover
 # ═══════════════════════════════════════════════════════════
 
 class Tooltip:
-    """Quản lý hiển thị cửa sổ Tooltip động theo con trỏ chuột."""
+    """Quản lý hiển thị cửa sổ Tooltip động theo con trỏ chuột.
+
+    Tái sử dụng một ``tk.Toplevel`` duy nhất (``withdraw``/``deiconify``) và hỗ trợ
+    trì hoãn ẩn ngắn để không bị nhấp nháy khi di chuột qua các nhãn con trong cùng 1 mã.
+    """
 
     # Khoảng lệch (px) của tooltip so với con trỏ chuột
     OFFSET_X = 15
     OFFSET_Y = 15
-    OFFSET_Y_ABOVE = 95  # Lệch lên khi chuột ở nửa dưới màn hình (tránh bị cắt)
+    OFFSET_Y_ABOVE = 95  # Lệch lên mặc định khi chưa đo kích thước thật của tooltip
+    HIDE_DELAY_MS = 40   # Độ trễ ẩn ngắn để chống nhấp nháy khi di qua ranh giới widget con
 
-    def __init__(self, widget):
+    def __init__(self, widget, font=("Consolas", 9)):
         self.widget = widget
+        self.font = font
         self.tipwindow = None
+        self._label = None
+        self._current_text = None
+        self._tip_w = 0
+        self._tip_h = 0
+        self._hide_after_id = None
+
+    def set_font(self, font):
+        """Đổi font tooltip; hủy cửa sổ cũ để lần hiện sau dựng lại với font mới."""
+        self.font = font
+        if self.tipwindow is not None:
+            try:
+                self.tipwindow.destroy()
+            except Exception:
+                pass
+            self.tipwindow = None
+            self._label = None
+            self._current_text = None
+
+    def _cancel_scheduled_hide(self):
+        if self._hide_after_id is not None:
+            try:
+                self.widget.after_cancel(self._hide_after_id)
+            except Exception:
+                pass
+            self._hide_after_id = None
 
     def _calc_pos(self, x_root, y_root):
-        """Tính vị trí tooltip; hiển thị phía trên chuột nếu ở nửa dưới màn hình."""
+        """Tính vị trí tooltip; tự lật lên trên / sang trái nếu gần mép màn hình."""
+        screen_w = self.widget.winfo_screenwidth()
         screen_h = self.widget.winfo_screenheight()
-        x = x_root + self.OFFSET_X
-        if y_root > screen_h / 2:
-            y = y_root - self.OFFSET_Y_ABOVE
-        else:
-            y = y_root + self.OFFSET_Y
-        return x, y
+        return calc_tooltip_pos(
+            x_root, y_root, screen_w, screen_h,
+            tip_w=self._tip_w, tip_h=self._tip_h,
+            offset_x=self.OFFSET_X, offset_y=self.OFFSET_Y,
+            offset_y_above=self.OFFSET_Y_ABOVE,
+        )
 
     def showtip(self, text, x_root, y_root):
-        """Hiển thị Tooltip tại vị trí chuột."""
-        if self.tipwindow or not text:
+        """Hiển thị hoặc cập nhật Tooltip tại vị trí chuột."""
+        self._cancel_scheduled_hide()
+        if not text:
             return
 
+        if self.tipwindow is None:
+            self.tipwindow = tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            try:
+                # Trên Windows: cửa sổ tooltip không chặn sự kiện chuột,
+                # tránh phát sinh <Leave> giả khi con trỏ chạm vào tooltip.
+                tw.wm_attributes("-disabled", True)
+            except tk.TclError:
+                pass
+
+            # Style Tooltip: Nền tối Catppuccin Mocha, viền mỏng
+            self._label = tk.Label(
+                tw, text=text, justify="left",
+                background="#1e1e2e", foreground="#cdd6f4",
+                relief="solid", borderwidth=1,
+                font=self.font,
+                padx=8, pady=6
+            )
+            self._label.pack(ipadx=1)
+            self._current_text = text
+            tw.update_idletasks()
+            self._tip_w = tw.winfo_reqwidth()
+            self._tip_h = tw.winfo_reqheight()
+        else:
+            if self._current_text != text:
+                self._label.config(text=text)
+                self._current_text = text
+                self.tipwindow.update_idletasks()
+                self._tip_w = self.tipwindow.winfo_reqwidth()
+                self._tip_h = self.tipwindow.winfo_reqheight()
+            if self.tipwindow.state() == "withdrawn":
+                self.tipwindow.deiconify()
+                self.tipwindow.attributes("-topmost", True)
+
         x, y = self._calc_pos(x_root, y_root)
-
-        self.tipwindow = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.attributes("-topmost", True)
-
-        # Style Tooltip: Nền tối Catppuccin Mocha, viền mỏng
-        label = tk.Label(
-            tw, text=text, justify="left",
-            background="#1e1e2e", foreground="#cdd6f4",
-            relief="solid", borderwidth=1,
-            font=("Consolas", 9),
-            padx=8, pady=6
-        )
-        label.pack(ipadx=1)
+        self.tipwindow.wm_geometry(f"+{x}+{y}")
 
     def movetip(self, x_root, y_root):
         """Di chuyển Tooltip theo chuột."""
-        if self.tipwindow:
+        self._cancel_scheduled_hide()
+        if self.tipwindow and self.tipwindow.state() != "withdrawn":
             x, y = self._calc_pos(x_root, y_root)
             self.tipwindow.wm_geometry(f"+{x}+{y}")
 
+    def schedule_hide(self):
+        """Lên lịch ẩn Tooltip sau một khoảng ngắn (hủy nếu chuột vào ngay widget kế tiếp)."""
+        self._cancel_scheduled_hide()
+        self._hide_after_id = self.widget.after(self.HIDE_DELAY_MS, self.hidetip)
+
     def hidetip(self):
-        """Ẩn Tooltip."""
-        tw = self.tipwindow
-        self.tipwindow = None
-        if tw:
-            tw.destroy()
+        """Ẩn Tooltip ngay lập tức (giữ lại Toplevel để tái sử dụng)."""
+        self._cancel_scheduled_hide()
+        if self.tipwindow and self.tipwindow.state() != "withdrawn":
+            self.tipwindow.withdraw()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -414,6 +611,8 @@ class TickerApp:
         self._alert_state = {}
         self._last_order_sig = None  # Chữ ký thứ tự lần render gần nhất (để tránh re-pack thừa)
         self._tray_icon = None
+        self._locked = False         # Khóa vị trí: chặn kéo thả khi bật
+        self._lock_var = None        # tk.BooleanVar đồng bộ trạng thái khóa trên menu
 
         self._load_and_apply_config()
         self._setup_ui()
@@ -447,7 +646,8 @@ class TickerApp:
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(
-                    {"x": x, "y": y, "symbols": symbols, "theme": theme},
+                    {"x": x, "y": y, "symbols": symbols, "theme": theme,
+                     "locked": getattr(self, "_locked", False)},
                     f, ensure_ascii=False, indent=4
                 )
         except Exception as e:
@@ -456,20 +656,29 @@ class TickerApp:
     def _load_and_apply_config(self):
         """Đọc config và áp dụng vị trí + danh sách symbols + theme."""
         config = self._load_config()
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        self._width = screen_w - 200
+        sx, sy, screen_w, screen_h = self._screen_bounds()
+        self._width = 300
         self._height = 25
 
         if config and "x" in config and "y" in config:
-            self._x = config["x"]
-            self._y = config["y"]
+            self._x, self._y = clamp_window_pos(
+                config["x"], config["y"], self._width, self._height,
+                screen_w, screen_h, sx, sy,
+            )
             self.symbols = config.get("symbols", DEFAULT_SYMBOLS)
             self.theme = {**DEFAULT_THEME, **config.get("theme", {})}
+            self._locked = bool(config.get("locked", False))
         else:
             self._x = 180
-            self._y = screen_h - self._height - 10
+            self._y = sy + screen_h - self._height - 10
             self._save_config(self._x, self._y, DEFAULT_SYMBOLS, DEFAULT_THEME)
+
+    def _screen_bounds(self):
+        """(x, y, w, h) của vùng để kẹp cửa sổ — ưu tiên virtual desktop đa màn hình."""
+        vs = get_virtual_screen()
+        if vs:
+            return vs
+        return (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
 
     # ── UI Setup ───────────────────────────────────────────
 
@@ -477,31 +686,62 @@ class TickerApp:
         """Khởi tạo giao diện chính."""
         root = self.root
         root.overrideredirect(True)
-        root.configure(bg=TRANSPARENT_COLOR)
+        root.configure(bg=self.theme["bg"])
+        # Vẫn giữ -transparentcolor để ai muốn nền trong suốt chỉ cần đặt
+        # theme["bg"] = TRANSPARENT_COLOR; mặc định bg khác màu này nên thanh đặc,
+        # không bị "xuyên chuột" → kéo được ở mọi chỗ trên thanh.
         root.attributes("-transparentcolor", TRANSPARENT_COLOR)
         root.attributes("-alpha", self.theme.get("opacity", 1.0))
         root.geometry(f"{self._width}x{self._height}+{self._x}+{self._y}")
 
         # Trạng thái kéo thả
-        self._drag = {"x": 0, "y": 0, "win_x": 0, "win_y": 0, "key": None, "moved": False}
+        self._drag = {"x": 0, "y": 0, "win_x": self._x, "win_y": self._y, "dragging": False}
 
         # Frame chứa tất cả các nhãn giá (cho phép hiển thị nhiều màu và hover)
-        self.container_frame = tk.Frame(root, bg=TRANSPARENT_COLOR)
+        self.container_frame = tk.Frame(root, bg=self.theme["bg"])
         self.container_frame.pack(expand=True, fill="both", padx=10)
 
-        # Gán sự kiện chuột kéo thả cho cả root và container frame
-        for widget in (root, self.container_frame):
-            self._bind_widget_events(widget)
+        # Tooltip dùng font theo theme (nhất quán với thanh giá)
+        self.tooltip.set_font((self.theme["font_family"], self.theme["font_size"]))
+
+        # Gán sự kiện chuột kéo thả / menu nền trên root (widget con kế thừa qua bindtags)
+        self._bind_widget_events(root)
 
         self._keep_on_top()
 
     def _setup_context_menu(self):
         """Khởi tạo menu chuột phải (nền thanh giá)."""
+        self._lock_var = tk.BooleanVar(value=self._locked)
         self._context_menu = tk.Menu(self.root, tearoff=0)
         self._context_menu.add_command(label="⚙ Cài đặt", command=self._open_settings)
         self._context_menu.add_command(label="🔄 Tải lại ngay", command=self._force_reload)
         self._context_menu.add_separator()
+        self._context_menu.add_checkbutton(label="🔒 Khóa vị trí", variable=self._lock_var,
+                                           command=self._apply_lock)
+        self._context_menu.add_command(label="🎯 Về vị trí mặc định", command=self._reset_position)
+        self._context_menu.add_separator()
         self._context_menu.add_command(label="✕ Thoát", command=self._on_quit)
+
+    def _apply_lock(self):
+        """Đồng bộ trạng thái khóa từ BooleanVar của menu và lưu config."""
+        self._locked = bool(self._lock_var.get()) if self._lock_var is not None else not self._locked
+        self._save_config()
+
+    def _toggle_lock(self):
+        """Đảo trạng thái khóa (dùng cho menu từng mã)."""
+        self._locked = not self._locked
+        if self._lock_var is not None:
+            self._lock_var.set(self._locked)
+        self._save_config()
+
+    def _reset_position(self):
+        """Đưa thanh giá về vị trí mặc định (góc dưới trái vùng màn hình)."""
+        sx, sy, sw, sh = self._screen_bounds()
+        x = sx + 180
+        y = sy + sh - self._height - 10
+        x, y = clamp_window_pos(x, y, self._width, self._height, sw, sh, sx, sy)
+        self.root.geometry(f"+{x}+{y}")
+        self._save_config(x, y)
 
     def _setup_tray(self):
         """Khởi tạo icon khay hệ thống (tùy chọn, cần pystray + Pillow)."""
@@ -534,54 +774,62 @@ class TickerApp:
         else:
             self.root.withdraw()
 
-    # ── Bind sự kiện (thay cho việc lặp code + suy luận tên hàm bằng string) ──
+    # ── Bind sự kiện (tận dụng bindtags của root để không lặp handler) ──
 
     def _bind_widget_events(self, widget, key=None):
-        """Gán toàn bộ sự kiện chuột cần thiết cho 1 widget.
+        """Gán sự kiện chuột cần thiết cho 1 widget.
 
-        ``key`` là mã ``type_symbol`` nếu widget thuộc về 1 mã cụ thể (item),
-        None nếu là vùng nền chung của thanh giá.
+        Các sự kiện kéo thả, double-click và menu nền chỉ gán 1 lần trên ``root``
+        (vì mọi widget con đều có ``root`` trong ``bindtags``). Widget thuộc về 1 mã
+        cụ thể (``key is not None``) chỉ gán riêng ``<Button-3>`` và trả về ``"break"``
+        để không kích hoạt trùng menu nền của ``root``.
         """
-        widget.bind("<ButtonPress-1>", lambda e: self._on_drag_start(e, key))
-        widget.bind("<B1-Motion>", self._on_drag_motion)
-        widget.bind("<ButtonRelease-1>", lambda e: self._on_drag_stop(e, key))
-        widget.bind("<Double-Button-1>", self._open_settings)
         if key is not None:
             widget.bind("<Button-3>", lambda e: self._show_item_context_menu(e, key))
         else:
+            widget.bind("<ButtonPress-1>", self._on_drag_start)
+            widget.bind("<B1-Motion>", self._on_drag_motion)
+            widget.bind("<ButtonRelease-1>", self._on_drag_stop)
+            widget.bind("<Double-Button-1>", self._open_settings)
             widget.bind("<Button-3>", self._show_context_menu)
 
-    # ── Drag & Drop / Click-to-open ────────────────────────
+    # ── Drag & Drop / Mở trang nguồn ───────────────────────
 
-    def _on_drag_start(self, event, key=None):
+    def _on_drag_start(self, event):
+        if getattr(self, "_locked", False):
+            return  # Đã khóa vị trí -> không cho kéo
         self.root.lift()
         self.root.attributes("-topmost", True)
         self._drag["x"] = event.x_root
         self._drag["y"] = event.y_root
         self._drag["win_x"] = self.root.winfo_x()
         self._drag["win_y"] = self.root.winfo_y()
-        self._drag["key"] = key
-        self._drag["moved"] = False
+        self._drag["dragging"] = True
         self.tooltip.hidetip()
 
     def _on_drag_motion(self, event):
+        if not self._drag.get("dragging"):
+            return
         dx = event.x_root - self._drag["x"]
         dy = event.y_root - self._drag["y"]
-        if abs(dx) > CLICK_MOVE_THRESHOLD or abs(dy) > CLICK_MOVE_THRESHOLD:
-            self._drag["moved"] = True
         nx = self._drag["win_x"] + dx
         ny = self._drag["win_y"] + dy
         self.root.geometry(f"+{nx}+{ny}")
 
-    def _on_drag_stop(self, event, key=None):
+    def _on_drag_stop(self, _event):
+        if not self._drag.get("dragging"):
+            return
+        self._drag["dragging"] = False
+        # Hít vào mép màn hình gần nhất khi thả (canh thẳng thanh giá)
+        sx, sy, sw, sh = self._screen_bounds()
+        cur_x, cur_y = self.root.winfo_x(), self.root.winfo_y()
+        snap_x, snap_y = snap_to_edges(cur_x, cur_y, self._width, self._height, sx, sy, sw, sh)
+        if (snap_x, snap_y) != (cur_x, cur_y):
+            self.root.geometry(f"+{snap_x}+{snap_y}")
         # Chỉ ghi config khi vị trí thực sự thay đổi
         if (self.root.winfo_x() != self._drag["win_x"]
                 or self.root.winfo_y() != self._drag["win_y"]):
             self._save_config()
-
-        # Nếu chuột gần như không di chuyển, coi đây là click -> mở link nguồn giá
-        if key is not None and not self._drag.get("moved", False):
-            self._open_source_link(key)
 
     def _open_source_link(self, key):
         symbol_type, symbol = key.split("_", 1)
@@ -601,17 +849,19 @@ class TickerApp:
             self._context_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self._context_menu.grab_release()
+        return "break"
 
     def _show_item_context_menu(self, event, key):
-        """Menu chuột phải riêng cho từng mã: di chuyển trái/phải, xóa."""
+        """Menu chuột phải riêng cho từng mã: mở trang nguồn, di chuyển trái/phải, xóa."""
         self.tooltip.hidetip()
         idx = next((i for i, it in enumerate(self.symbols)
                     if f"{it['type']}_{it['symbol']}" == key), None)
         if idx is None:
-            self._show_context_menu(event)
-            return
+            return self._show_context_menu(event)
 
         menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="🌐 Mở trang nguồn", command=lambda: self._open_source_link(key))
+        menu.add_separator()
         menu.add_command(label="⬅ Di chuyển trái", command=lambda: self._move_symbol(key, -1),
                           state="normal" if idx > 0 else "disabled")
         menu.add_command(label="➡ Di chuyển phải", command=lambda: self._move_symbol(key, 1),
@@ -620,11 +870,15 @@ class TickerApp:
         menu.add_separator()
         menu.add_command(label="⚙ Cài đặt", command=self._open_settings)
         menu.add_command(label="🔄 Tải lại ngay", command=self._force_reload)
+        menu.add_checkbutton(label="🔒 Khóa vị trí", variable=self._lock_var,
+                             command=self._apply_lock)
+        menu.add_command(label="🎯 Về vị trí mặc định", command=self._reset_position)
         menu.add_command(label="✕ Thoát", command=self._on_quit)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+        return "break"
 
     def _move_symbol(self, key, direction):
         """Di chuyển 1 mã sang trái (-1) hoặc phải (+1) trong danh sách hiển thị."""
@@ -686,6 +940,7 @@ class TickerApp:
         with self._prices_lock:
             data = self.last_prices.get(key)
         if not data or "extra_info" not in data or not data["extra_info"]:
+            self.tooltip.hidetip()
             return
 
         symbol = key.split("_", 1)[1]
@@ -694,12 +949,13 @@ class TickerApp:
         tip_text = ""
 
         if t == "crypto":
+            high_str = f"{info['high']:,.2f}" if abs(info["high"]) >= 1 else format_crypto_usd(info["high"])
+            low_str = f"{info['low']:,.2f}" if abs(info["low"]) >= 1 else format_crypto_usd(info["low"])
             tip_text = (
                 f"⭐ Binance Crypto: {symbol}\n"
-                f"📈 Cao nhất 24h : ${info['high']:,.2f}\n"
-                f"📉 Thấp nhất 24h: ${info['low']:,.2f}\n"
-                f"📊 Khối lượng    : {info['volume']:,.2f} {symbol}\n"
-                f"🖱️ Click để mở Binance"
+                f"📈 Cao nhất 24h : ${high_str}\n"
+                f"📉 Thấp nhất 24h: ${low_str}\n"
+                f"📊 Khối lượng    : {info['volume']:,.2f} {symbol}"
             )
         elif t == "stock":
             high_str = f"{info['high']:,.0f}đ" if info.get("high") else "N/A"
@@ -709,8 +965,7 @@ class TickerApp:
                 f"📈 Chứng khoán: {symbol}\n"
                 f"🔺 Cao nhất ngày : {high_str}\n"
                 f"🔻 Thấp nhất ngày: {low_str}\n"
-                f"📊 Khối lượng    : {vol_str}\n"
-                f"🖱️ Click để mở Yahoo Finance"
+                f"📊 Khối lượng    : {vol_str}"
             )
         elif t == "gold":
             buy_str = f"{info['buy']:,.0f}đ" if info.get("buy") else "N/A"
@@ -724,8 +979,7 @@ class TickerApp:
             tip_text = (
                 f"🤝 Binance P2P: {symbol}\n"
                 f"💵 Giá {info['trade_type']}: {info['price']:,.0f} {info['fiat']}\n"
-                f"⚡ Thanh toán: Chuyển khoản ngân hàng\n"
-                f"🖱️ Click để mở Binance P2P"
+                f"⚡ Thanh toán: Chuyển khoản ngân hàng"
             )
 
         self.tooltip.showtip(tip_text, event.x_root, event.y_root)
@@ -734,7 +988,7 @@ class TickerApp:
         self.tooltip.movetip(event.x_root, event.y_root)
 
     def _hide_tooltip(self, _event):
-        self.tooltip.hidetip()
+        self.tooltip.schedule_hide()
 
     # ── Data Fetching & Rendering ──────────────────────────
 
@@ -805,6 +1059,19 @@ class TickerApp:
             "alert": alert,
         }
 
+    def _notify_alert(self, data):
+        """Phát âm thanh + balloon tray khi giá vượt ngưỡng (ngoài việc flash nền)."""
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.notify(data.get("price_text", "Giá vượt ngưỡng"), "⚠ Cảnh báo giá")
+            except Exception:
+                pass
+
     def _flash_alert(self, frame):
         """Highlight tạm thời nền của 1 mã khi có cảnh báo giá vượt ngưỡng."""
         try:
@@ -817,9 +1084,9 @@ class TickerApp:
 
     def _reset_flash(self, frame):
         try:
-            frame.configure(bg=TRANSPARENT_COLOR)
+            frame.configure(bg=self.theme["bg"])
             for child in frame.winfo_children():
-                child.configure(bg=TRANSPARENT_COLOR)
+                child.configure(bg=self.theme["bg"])
         except Exception:
             pass
 
@@ -846,25 +1113,25 @@ class TickerApp:
             # Nếu chưa có widget, tiến hành tạo mới
             if key not in self.symbol_widgets:
                 created_new = True
-                frame = tk.Frame(self.container_frame, bg=TRANSPARENT_COLOR)
+                frame = tk.Frame(self.container_frame, bg=self.theme["bg"])
                 self._bind_widget_events(frame, key=key)
 
                 lbl_price = tk.Label(
-                    frame, fg=self.theme["fg"], bg=TRANSPARENT_COLOR,
+                    frame, fg=self.theme["fg"], bg=self.theme["bg"],
                     font=font, anchor="w"
                 )
                 lbl_price.pack(side="left")
                 self._bind_widget_events(lbl_price, key=key)
 
                 lbl_change = tk.Label(
-                    frame, bg=TRANSPARENT_COLOR,
+                    frame, bg=self.theme["bg"],
                     font=font, anchor="w"
                 )
                 lbl_change.pack(side="left")
                 self._bind_widget_events(lbl_change, key=key)
 
                 lbl_sep = tk.Label(
-                    frame, text="|", fg=self.theme["separator_color"], bg=TRANSPARENT_COLOR,
+                    frame, text="|", fg=self.theme["separator_color"], bg=self.theme["bg"],
                     font=font
                 )
 
@@ -900,6 +1167,7 @@ class TickerApp:
 
             if data.get("alert"):
                 self._flash_alert(widgets["frame"])
+                self._notify_alert(data)
 
         # Chỉ re-pack lại toàn bộ khi thứ tự thay đổi hoặc vừa tạo widget mới —
         # tránh pack_forget/pack thừa mỗi lần cập nhật giá (giảm CPU & nhấp nháy).
@@ -911,6 +1179,31 @@ class TickerApp:
                     widgets["frame"].pack_forget()
                     widgets["frame"].pack(side="left", padx=0)
             self._last_order_sig = order_sig
+
+        self._fit_window_to_content()
+
+    def _fit_window_to_content(self):
+        """Tự co giãn chiều rộng & chiều cao cửa sổ vừa khít nội dung và giữ trong màn hình."""
+        if not self.symbol_widgets:
+            return
+        self.root.update_idletasks()
+        req_w = max(80, self.container_frame.winfo_reqwidth() + 20)
+        req_h = max(25, self.container_frame.winfo_reqheight() + 4)
+        if req_w == self._width and req_h == self._height:
+            return
+
+        self._width = req_w
+        self._height = req_h
+        if self._drag.get("dragging"):
+            self.root.geometry(f"{self._width}x{self._height}")
+            return
+
+        sx, sy, screen_w, screen_h = self._screen_bounds()
+        cur_x, cur_y = clamp_window_pos(
+            self.root.winfo_x(), self.root.winfo_y(),
+            self._width, self._height, screen_w, screen_h, sx, sy,
+        )
+        self.root.geometry(f"{self._width}x{self._height}+{cur_x}+{cur_y}")
 
     def _update_data(self):
         """Vòng lặp cập nhật dữ liệu song song, mỗi loại tài sản có chu kỳ riêng."""
@@ -970,10 +1263,70 @@ class TickerApp:
     def _start_update_thread(self):
         threading.Thread(target=self._update_data, daemon=True).start()
 
+    # ── Theme & Autostart ──────────────────────────────────
+
+    def _apply_theme(self):
+        """Áp theme hiện tại lên cửa sổ và buộc dựng lại widget mã với màu/font mới."""
+        self.root.attributes("-alpha", self.theme.get("opacity", 1.0))
+        self.root.configure(bg=self.theme["bg"])
+        self.container_frame.configure(bg=self.theme["bg"])
+        self.tooltip.set_font((self.theme["font_family"], self.theme["font_size"]))
+        for _key, widgets in list(self.symbol_widgets.items()):
+            widgets["frame"].destroy()
+        self.symbol_widgets.clear()
+        self._last_order_sig = None  # buộc re-pack ở lần render kế
+
+    @staticmethod
+    def _autostart_command():
+        """Lệnh chạy khi khởi động Windows (ưu tiên pythonw.exe để ẩn console)."""
+        pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        exe = pyw if os.path.exists(pyw) else sys.executable
+        return f'"{exe}" "{os.path.abspath(__file__)}"'
+
+    @staticmethod
+    def _is_autostart_enabled():
+        """True nếu đã bật khởi động cùng Windows (có value trong HKCU\\...\\Run)."""
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY)
+            try:
+                winreg.QueryValueEx(key, AUTOSTART_NAME)
+                return True
+            finally:
+                winreg.CloseKey(key)
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
+    def _set_autostart(self, enabled):
+        """Bật/tắt khởi động cùng Windows qua registry Run key (HKCU)."""
+        try:
+            import winreg
+            key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
+                                     winreg.KEY_SET_VALUE)
+            try:
+                if enabled:
+                    winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ,
+                                      self._autostart_command())
+                else:
+                    try:
+                        winreg.DeleteValue(key, AUTOSTART_NAME)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                winreg.CloseKey(key)
+            return True
+        except Exception as e:
+            logger.warning("Không đặt được autostart: %s", e)
+            return False
+
     # ── Settings Window ────────────────────────────────────
 
     def _open_settings(self, _event=None):
         """Mở cửa sổ chỉnh sửa danh sách mã hiển thị và các tùy chọn giao diện."""
+        self._drag["dragging"] = False
+        self.tooltip.hidetip()
         if self._settings_win is not None:
             try:
                 self._settings_win.lift()
@@ -982,79 +1335,180 @@ class TickerApp:
             except Exception:
                 self._settings_win = None
 
-        current_json = json.dumps(self.symbols, indent=4, ensure_ascii=False)
-
         win = tk.Toplevel(self.root)
-        win.title("Cài đặt mã hiển thị")
-        win.geometry("500x520")
+        win.title("Cài đặt")
+        win.geometry("600x680")
         win.attributes("-topmost", True)
         win.configure(bg="#1e1e2e")
         self._settings_win = win
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_settings_win(win))
 
-        # Tiêu đề
-        tk.Label(
-            win,
-            text="Chỉnh sửa danh sách hiển thị (định dạng JSON):",
-            font=("Consolas", 10), fg="#cdd6f4", bg="#1e1e2e",
-        ).pack(pady=(10, 5))
+        LBL = {"bg": "#1e1e2e", "fg": "#cdd6f4", "font": ("Consolas", 9)}
+        ENT = {"bg": "#313244", "fg": "#cdd6f4", "insertbackground": "#cdd6f4",
+               "relief": "flat", "font": ("Consolas", 9)}
 
-        # Vùng soạn thảo JSON — Dark theme
-        text_area = tk.Text(
-            win, height=14,
-            bg="#313244", fg="#a6e3a1", insertbackground="#cdd6f4",
-            font=("Consolas", 10), relief="flat", padx=8, pady=8,
-            selectbackground="#585b70", selectforeground="#cdd6f4",
-        )
-        text_area.insert(tk.END, current_json)
-        text_area.pack(padx=10, fill=tk.BOTH, expand=True)
+        def _style_optionmenu(om, width=14):
+            om.configure(bg="#313244", fg="#cdd6f4", highlightthickness=0, relief="flat",
+                         activebackground="#585b70", font=("Consolas", 9), width=width)
+            om["menu"].configure(bg="#313244", fg="#cdd6f4")
 
-        # Gợi ý format
-        tk.Label(
-            win,
-            text=('type: crypto | p2p | gold | stock  '
-                  '(tùy chọn: "alert_above", "alert_below")'),
-            font=("Consolas", 8), fg="#6c7086", bg="#1e1e2e",
-        ).pack(pady=(2, 8))
+        # ── Bảng danh sách mã ──
+        tk.Label(win, text="Danh sách mã hiển thị", font=("Consolas", 11, "bold"),
+                 fg="#cdd6f4", bg="#1e1e2e").pack(pady=(10, 4))
 
-        # ── Tùy chọn giao diện (Theme) ──
-        theme_frame = tk.Frame(win, bg="#1e1e2e")
-        theme_frame.pack(fill="x", padx=10, pady=(0, 5))
+        header = tk.Frame(win, bg="#1e1e2e")
+        header.pack(fill="x", padx=12)
+        for text, w in (("Loại", 8), ("Mã", 15), ("Nhãn", 11),
+                        ("Cảnh báo ≥", 12), ("Cảnh báo ≤", 12), ("", 3)):
+            tk.Label(header, text=text, width=w, anchor="w",
+                     fg="#9399b2", bg="#1e1e2e", font=("Consolas", 8)).pack(side="left", padx=1)
 
-        tk.Label(theme_frame, text="Độ trong suốt:", font=("Consolas", 9),
-                 fg="#cdd6f4", bg="#1e1e2e").grid(row=0, column=0, sticky="w")
+        table_wrap = tk.Frame(win, bg="#1e1e2e")
+        table_wrap.pack(fill="both", expand=True, padx=12)
+        canvas = tk.Canvas(table_wrap, bg="#1e1e2e", highlightthickness=0, height=180)
+        vbar = tk.Scrollbar(table_wrap, orient="vertical", command=canvas.yview)
+        rows_frame = tk.Frame(canvas, bg="#1e1e2e")
+        rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+
+        rows = []
+
+        def _as_str(v):
+            return "" if v is None else str(v)
+
+        def add_row(item=None):
+            item = item or {}
+            rf = tk.Frame(rows_frame, bg="#1e1e2e")
+            rf.pack(fill="x", pady=1)
+            type_var = tk.StringVar(value=item.get("type", "crypto"))
+            sym_var = tk.StringVar(value=item.get("symbol", ""))
+            lbl_var = tk.StringVar(value=item.get("label", ""))
+            above_var = tk.StringVar(value=_as_str(item.get("alert_above")))
+            below_var = tk.StringVar(value=_as_str(item.get("alert_below")))
+
+            om = tk.OptionMenu(rf, type_var, *sorted(VALID_TYPES))
+            _style_optionmenu(om, width=6)
+            om.pack(side="left", padx=1)
+            tk.Entry(rf, textvariable=sym_var, width=15, **ENT).pack(side="left", padx=1)
+            tk.Entry(rf, textvariable=lbl_var, width=11, **ENT).pack(side="left", padx=1)
+            tk.Entry(rf, textvariable=above_var, width=12, **ENT).pack(side="left", padx=1)
+            tk.Entry(rf, textvariable=below_var, width=12, **ENT).pack(side="left", padx=1)
+
+            row = {"frame": rf, "type": type_var, "symbol": sym_var, "label": lbl_var,
+                   "above": above_var, "below": below_var, "alive": True}
+
+            def remove():
+                row["alive"] = False
+                rf.destroy()
+
+            tk.Button(rf, text="🗑", command=remove, bg="#45475a", fg="#f38ba8",
+                      relief="flat", cursor="hand2", width=2).pack(side="left", padx=1)
+            rows.append(row)
+
+        for it in self.symbols:
+            add_row(it)
+
+        tk.Button(win, text="➕ Thêm mã", command=lambda: add_row(),
+                  bg="#45475a", fg="#a6e3a1", relief="flat", cursor="hand2",
+                  font=("Consolas", 9)).pack(pady=(6, 2))
+        tk.Label(win, text="Bỏ trống ô Cảnh báo nếu không dùng. Nhãn trống sẽ lấy theo Mã.",
+                 font=("Consolas", 8), fg="#6c7086", bg="#1e1e2e").pack()
+
+        # ── Giao diện (Theme) ──
+        tk.Label(win, text="Giao diện", font=("Consolas", 11, "bold"),
+                 fg="#cdd6f4", bg="#1e1e2e").pack(pady=(10, 4))
+        tf = tk.Frame(win, bg="#1e1e2e")
+        tf.pack(fill="x", padx=12)
+
+        bg_var = tk.StringVar(value=self.theme.get("bg", "#11111b"))
+        fg_var = tk.StringVar(value=self.theme.get("fg", "white"))
+        font_family_var = tk.StringVar(value=self.theme.get("font_family", "Consolas"))
         opacity_var = tk.DoubleVar(value=self.theme.get("opacity", 1.0))
-        opacity_scale = tk.Scale(
-            theme_frame, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
-            variable=opacity_var, bg="#1e1e2e", fg="#cdd6f4", highlightthickness=0,
-            troughcolor="#313244", length=200,
-        )
-        opacity_scale.grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-        tk.Label(theme_frame, text="Cỡ chữ:", font=("Consolas", 9),
-                 fg="#cdd6f4", bg="#1e1e2e").grid(row=1, column=0, sticky="w", pady=(6, 0))
         font_size_var = tk.IntVar(value=self.theme.get("font_size", 9))
-        font_size_spin = tk.Spinbox(
-            theme_frame, from_=7, to=16, textvariable=font_size_var, width=5,
-            bg="#313244", fg="#cdd6f4",
-        )
-        font_size_spin.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
+        autostart_var = tk.BooleanVar(value=self._is_autostart_enabled())
+
+        def _swatch(btn, color):
+            try:
+                btn.configure(bg=color)
+            except Exception:
+                pass
+
+        def pick_color(var, btn):
+            c = colorchooser.askcolor(color=var.get(), parent=win)
+            if c and c[1]:
+                var.set(c[1])
+                _swatch(btn, c[1])
+
+        tk.Label(tf, text="Preset:", **LBL).grid(row=0, column=0, sticky="w", pady=3)
+        preset_var = tk.StringVar(value="— chọn —")
+
+        def apply_preset(name):
+            p = THEME_PRESETS.get(name)
+            if not p:
+                return
+            bg_var.set(p["bg"]); _swatch(bg_btn, p["bg"])
+            fg_var.set(p["fg"]); _swatch(fg_btn, p["fg"])
+            self.theme["separator_color"] = p.get("separator_color",
+                                                  self.theme.get("separator_color"))
+
+        pom = tk.OptionMenu(tf, preset_var, *THEME_PRESETS.keys(), command=apply_preset)
+        _style_optionmenu(pom)
+        pom.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(tf, text="Màu nền:", **LBL).grid(row=1, column=0, sticky="w", pady=3)
+        bg_btn = tk.Button(tf, width=8, relief="flat", cursor="hand2",
+                           command=lambda: pick_color(bg_var, bg_btn))
+        _swatch(bg_btn, bg_var.get())
+        bg_btn.grid(row=1, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(tf, text="Màu chữ:", **LBL).grid(row=2, column=0, sticky="w", pady=3)
+        fg_btn = tk.Button(tf, width=8, relief="flat", cursor="hand2",
+                           command=lambda: pick_color(fg_var, fg_btn))
+        _swatch(fg_btn, fg_var.get())
+        fg_btn.grid(row=2, column=1, sticky="w", padx=(8, 0))
+
+        families = list(dict.fromkeys([font_family_var.get()] + FONT_FAMILIES))
+        tk.Label(tf, text="Font:", **LBL).grid(row=3, column=0, sticky="w", pady=3)
+        fom = tk.OptionMenu(tf, font_family_var, *families)
+        _style_optionmenu(fom)
+        fom.grid(row=3, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=4, column=0, sticky="w", pady=3)
+        tk.Spinbox(tf, from_=7, to=16, textvariable=font_size_var, width=5,
+                   bg="#313244", fg="#cdd6f4").grid(row=4, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(tf, text="Độ mờ:", **LBL).grid(row=5, column=0, sticky="w", pady=3)
+        tk.Scale(tf, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
+                 variable=opacity_var, bg="#1e1e2e", fg="#cdd6f4", highlightthickness=0,
+                 troughcolor="#313244", length=200).grid(row=5, column=1, sticky="w", padx=(8, 0))
+
+        tk.Checkbutton(tf, text="Khởi động cùng Windows", variable=autostart_var,
+                       bg="#1e1e2e", fg="#cdd6f4", selectcolor="#313244",
+                       activebackground="#1e1e2e", activeforeground="#cdd6f4",
+                       font=("Consolas", 9)).grid(row=6, column=0, columnspan=2,
+                                                   sticky="w", pady=(6, 0))
 
         def save():
-            raw = text_area.get("1.0", tk.END).strip()
             try:
-                new_symbols = json.loads(raw)
+                raw_rows = [{
+                    "type": r["type"].get(), "symbol": r["symbol"].get(),
+                    "label": r["label"].get(), "alert_above": r["above"].get(),
+                    "alert_below": r["below"].get(),
+                } for r in rows if r["alive"]]
+                new_symbols = parse_symbol_rows(raw_rows)
                 self._validate_symbols(new_symbols)
                 self.symbols = new_symbols
 
                 self.theme["opacity"] = opacity_var.get()
-                self.theme["font_size"] = font_size_var.get()
-                self.root.attributes("-alpha", self.theme["opacity"])
-
-                # Áp dụng cỡ chữ mới: buộc tạo lại toàn bộ widget mã
-                for key, widgets in list(self.symbol_widgets.items()):
-                    widgets["frame"].destroy()
-                self.symbol_widgets.clear()
+                self.theme["font_size"] = int(font_size_var.get())
+                self.theme["font_family"] = font_family_var.get()
+                self.theme["bg"] = bg_var.get()
+                self.theme["fg"] = fg_var.get()
+                self._apply_theme()
+                self._set_autostart(bool(autostart_var.get()))
 
                 self._save_config(symbols=new_symbols, theme=self.theme)
                 self._close_settings_win(win)
@@ -1062,13 +1516,12 @@ class TickerApp:
             except Exception as e:
                 messagebox.showerror("Lỗi", str(e), parent=win)
 
-        # Nút lưu
         tk.Button(
-            win, text="💾 Lưu Cấu Hình", command=save,
+            win, text="💾 Lưu cấu hình", command=save,
             bg="#89b4fa", fg="#1e1e2e", activebackground="#74c7ec",
             font=("Arial", 10, "bold"), relief="flat", padx=20, pady=5,
             cursor="hand2",
-        ).pack(pady=10)
+        ).pack(pady=12)
 
     def _close_settings_win(self, win):
         """Đóng cửa sổ settings và reset trạng thái."""

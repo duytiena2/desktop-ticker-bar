@@ -24,7 +24,7 @@
 - ⏱️ **Chu kỳ cập nhật riêng theo loại tài sản**: Crypto 10s, P2P 20s, Chứng khoán 30s, Vàng 60s — giảm tải gọi API không cần thiết.
 - 🕒 **Nhận biết giờ giao dịch**: Mã chứng khoán sàn VN (`.VN`) ngừng cập nhật ngoài giờ giao dịch (T2–T6, 9h–15h) sau khi đã có giá đóng cửa — tiết kiệm request.
 - 🔁 **Fallback nguồn chứng khoán**: Tự động thử `query2.finance.yahoo.com` khi `query1` bị lỗi/chặn.
-- 🖱️ **Click để mở nguồn giá**: Click (không kéo) vào một mã sẽ mở trang nguồn (Binance/Yahoo Finance/SJC) trên trình duyệt.
+- 🌐 **Mở trang nguồn giá**: Chuột phải vào một mã và chọn **Mở trang nguồn** để mở trang tương ứng (Binance/Yahoo Finance/SJC) trên trình duyệt.
 - ↔️ **Sắp xếp lại / xóa mã**: Chuột phải vào một mã cụ thể để Di chuyển trái/phải hoặc Xóa mã khỏi thanh giá.
 - 🔔 **Cảnh báo giá**: Thêm `alert_above`/`alert_below` vào mã trong config để nhận highlight màu khi giá vượt ngưỡng (ghi log vào `ticker.log`).
 - 🎨 **Theme tùy chỉnh**: Chỉnh độ trong suốt và cỡ chữ trực tiếp trong cửa sổ Cài đặt (lưu vào `config.json` mục `theme`).

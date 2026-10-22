@@ -12,7 +12,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ticker import (
     TickerApp,
     PriceProvider,
+    Tooltip,
+    calc_tooltip_pos,
+    clamp_window_pos,
+    snap_to_edges,
+    parse_symbol_rows,
     vn_market_open,
+    format_crypto_usd,
     format_price_text,
     format_change_display,
     DEFAULT_THEME,
@@ -50,10 +56,17 @@ class FakeProvider:
         return self.ret
 
 
-# ── format_price_text ──────────────────────────────────────
+# ── format_price_text & format_crypto_usd ──────────────────
 
 def test_format_price_text_crypto():
     assert format_price_text("BTC", 65000.4, "crypto") == "BTC:$65,000"
+
+
+def test_format_price_text_crypto_small_prices():
+    assert format_price_text("XRP", 2.345, "crypto") == "XRP:$2.35"
+    assert format_price_text("DOGE", 0.12345, "crypto") == "DOGE:$0.1235"
+    assert format_price_text("SHIB", 0.000025, "crypto") == "SHIB:$0.000025"
+    assert format_crypto_usd(0) == "0"
 
 
 def test_format_price_text_stock_vnd():
@@ -260,3 +273,150 @@ def test_get_stock_price_both_hosts_fail():
     provider.session = _FakeSession([_FakeResp(500), _FakeResp(500)])
     price, change, extra = provider.get_stock_price("FPT.VN")
     assert price is None
+
+
+# ── Drag / Mouse Release & Source Link ─────────────────────
+
+def test_drag_stop_without_drag_start_is_noop(monkeypatch):
+    """Nhả chuột khi chỉ lướt/hover từ ngoài vào (chưa nhấn trên thanh giá) không lưu config hay mở web."""
+    opened = []
+    monkeypatch.setattr("ticker.webbrowser.open", lambda url: opened.append(url))
+    app = _make_app()
+    app._drag = {"x": 0, "y": 0, "win_x": 100, "win_y": 200, "dragging": False}
+    saved = []
+    app._save_config = lambda *a, **kw: saved.append(True)
+
+    app._on_drag_stop(None)
+
+    assert opened == []
+    assert saved == []
+
+
+def test_open_source_link_builds_correct_url(monkeypatch):
+    opened = []
+    monkeypatch.setattr("ticker.webbrowser.open", lambda url: opened.append(url))
+    app = _make_app()
+
+    app._open_source_link("crypto_BTC")
+    app._open_source_link("stock_FPT.VN")
+
+    assert opened == [
+        "https://www.binance.com/en/trade/BTC_USDT",
+        "https://finance.yahoo.com/quote/FPT.VN",
+    ]
+
+
+# ── Tooltip Positioning & Anti-flicker ─────────────────────
+
+def test_calc_tooltip_pos_top_left_normal():
+    x, y = calc_tooltip_pos(200, 100, 1920, 1080, tip_w=220, tip_h=80)
+    assert x == 215
+    assert y == 115
+
+
+def test_calc_tooltip_pos_bottom_flips_above():
+    # Khi đã đo được tip_h=80, đặt phía trên con trỏ cách (80 + 15) = 95px
+    x, y = calc_tooltip_pos(200, 1000, 1920, 1080, tip_w=220, tip_h=80)
+    assert x == 215
+    assert y == 1000 - (80 + 15)
+
+
+def test_calc_tooltip_pos_right_edge_flips_left():
+    # Khi x_root gần mép phải (1800 + 15 + 220 > 1920) -> lật sang trái con trỏ
+    x, y = calc_tooltip_pos(1800, 100, 1920, 1080, tip_w=220, tip_h=80)
+    assert x == 1800 - 220 - 15
+    assert y == 115
+
+
+def test_tooltip_schedule_hide_cancelled_on_move():
+    """Di chuột sang nhãn con kế tiếp (movetip) sẽ hủy lịch ẩn đang chờ, chống nhấp nháy."""
+    cancelled = []
+
+    class FakeWidget:
+        def after(self, ms, cb):
+            return "timer_1"
+
+        def after_cancel(self, after_id):
+            cancelled.append(after_id)
+
+        def winfo_screenwidth(self):
+            return 1920
+
+        def winfo_screenheight(self):
+            return 1080
+
+    tip = Tooltip(FakeWidget())
+    tip.schedule_hide()
+    assert tip._hide_after_id == "timer_1"
+
+    tip.movetip(300, 300)
+    assert cancelled == ["timer_1"]
+    assert tip._hide_after_id is None
+
+
+# ── clamp_window_pos ───────────────────────────────────────
+
+def test_clamp_window_pos_inside_bounds():
+    assert clamp_window_pos(180, 1000, 500, 25, 1920, 1080) == (180, 1000)
+
+
+def test_clamp_window_pos_out_of_bounds():
+    # Kẹp khi tọa độ bị âm hoặc vượt quá kích thước màn hình
+    assert clamp_window_pos(-50, 2000, 500, 25, 1920, 1080) == (0, 1055)
+    assert clamp_window_pos(2500, -10, 500, 25, 1920, 1080) == (1420, 0)
+
+
+def test_clamp_window_pos_virtual_offset():
+    # Vùng ảo bắt đầu ở x=-1920 (màn phụ bên trái) -> cho phép tọa độ âm trong vùng
+    assert clamp_window_pos(-1900, 100, 500, 25, 3840, 1080, -1920, 0) == (-1900, 100)
+    # Kẹp về gốc vùng khi vượt mép trái của virtual desktop
+    assert clamp_window_pos(-5000, 100, 500, 25, 3840, 1080, -1920, 0) == (-1920, 100)
+
+
+# ── snap_to_edges ──────────────────────────────────────────
+
+def test_snap_to_edges_snaps_left_and_bottom():
+    # x gần mép trái (10<=20) -> hít về 0; y gần mép dưới -> hít sát đáy
+    x, y = snap_to_edges(10, 1065, 500, 25, 0, 0, 1920, 1080, threshold=20)
+    assert x == 0
+    assert y == 1080 - 25
+
+
+def test_snap_to_edges_snaps_right():
+    # x+win cách mép phải 10px -> hít sát phải
+    x, y = snap_to_edges(1410, 500, 500, 25, 0, 0, 1920, 1080, threshold=20)
+    assert x == 1920 - 500
+
+
+def test_snap_to_edges_no_snap_when_far():
+    x, y = snap_to_edges(800, 500, 500, 25, 0, 0, 1920, 1080, threshold=20)
+    assert (x, y) == (800, 500)
+
+
+# ── parse_symbol_rows ──────────────────────────────────────
+
+def test_parse_symbol_rows_basic_and_label_default():
+    rows = [
+        {"type": "crypto", "symbol": "BTC", "label": "", "alert_above": "", "alert_below": ""},
+    ]
+    result = parse_symbol_rows(rows)
+    assert result == [{"type": "crypto", "symbol": "BTC", "label": "BTC"}]
+
+
+def test_parse_symbol_rows_skips_empty_and_parses_alerts():
+    rows = [
+        {"type": "crypto", "symbol": "BTC", "label": "BTC", "alert_above": "70,000", "alert_below": ""},
+        {"type": "stock", "symbol": "", "label": "", "alert_above": "", "alert_below": ""},  # trống -> bỏ
+    ]
+    result = parse_symbol_rows(rows)
+    assert len(result) == 1
+    assert result[0]["alert_above"] == 70000.0
+    assert "alert_below" not in result[0]
+
+
+def test_parse_symbol_rows_invalid_alert_raises():
+    rows = [{"type": "crypto", "symbol": "BTC", "label": "BTC",
+             "alert_above": "abc", "alert_below": ""}]
+    with pytest.raises(ValueError):
+        parse_symbol_rows(rows)
+
