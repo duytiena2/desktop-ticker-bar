@@ -6,3 +6,8 @@ ticker.log*
 venv/
 .idea/
 .vscode/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
