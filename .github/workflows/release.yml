@@ -1,0 +1,44 @@
+name: Build Windows EXE
+
+# Tự build .exe khi push tag vX.Y.Z (và cho phép chạy tay từ tab Actions).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # cần quyền ghi để đính file vào Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cài phụ thuộc
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build .exe
+        run: pyinstaller --noconsole --onefile --name DesktopTickerBar ticker.py
+
+      # Khi chạy tay (workflow_dispatch): tải .exe dạng artifact để tự tải về.
+      - name: Tải artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopTickerBar
+          path: dist/DesktopTickerBar.exe
+
+      # Khi push tag: đính .exe vào Release tương ứng.
+      - name: Đính vào Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DesktopTickerBar.exe
