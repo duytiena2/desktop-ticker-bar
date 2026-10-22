@@ -1,104 +1,140 @@
 # Desktop Ticker Bar
 
-Ứng dụng thanh hiển thị giá tiện lợi chạy trực tiếp trên Desktop Windows sử dụng Python và Tkinter. Cho phép theo dõi nhanh giá tiền mã hóa (Crypto), giá P2P, giá Vàng và các mã chứng khoán (hoặc chỉ số chứng khoán) trong thời gian thực.
+Thanh hiển thị giá **luôn nổi trên desktop Windows**, viết bằng Python + Tkinter (single-file).
+Theo dõi nhanh **Crypto / P2P (Binance)**, **Vàng SJC (vnappmob)** và **Chứng khoán Việt Nam (Yahoo Finance)** theo thời gian thực — gọn nhẹ, không chiếm cửa sổ.
 
-![Desktop Ticker Bar Preview](https://raw.githubusercontent.com/username/desktop-ticker-bar/main/preview.png) *(Thay thế link này bằng ảnh thực tế sau khi deploy)*
+![Thanh giá](assets/bar.png)
 
----
-
-## ✨ Tính năng chính
-
-- 🚀 **Cập nhật đa dạng nguồn giá**:
-  - **Crypto**: Lấy trực tiếp từ Binance API (BTC, ETH, v.v.).
-  - **P2P**: Lấy giá mua/bán P2P từ Binance (USDT/VND).
-  - **Vàng**: Lấy giá SJC từ vnappmob API.
-  - **Chứng khoán**: Lấy từ Yahoo Finance (VNI, FPT, VN30, v.v.).
-- 🧵 **Tải dữ liệu song song**: Sử dụng `ThreadPoolExecutor` để gọi API đồng thời, không làm đơ giao diện (UI).
-- 💾 **Lưu vị trí thông minh**: Tự động lưu tọa độ của thanh giá trên màn hình (lần sau mở lại sẽ đúng vị trí cũ).
-- 🖱️ **Kéo thả linh hoạt**: Nhấp giữ chuột trái để di chuyển thanh giá đến bất kỳ đâu trên màn hình.
-- ⚙️ **Menu chuột phải**:
-  - **Cài đặt**: Chỉnh sửa trực tiếp danh sách mã hiển thị bằng định dạng JSON.
-  - **Tải lại ngay**: Buộc cập nhật dữ liệu lập tức mà không cần đợi hết chu kỳ.
-  - **Thoát**: Tắt ứng dụng an toàn.
-- 🛡️ **Chống mất kết nối (Offline Cache)**: Lưu lại giá trị gần nhất để hiển thị kèm dấu hiệu nhận biết (`*`) khi mạng bị lỗi hoặc mất kết nối. Nếu chưa từng lấy được dữ liệu (chưa có cache), hiển thị `--` thay vì để trống.
-- ⏱️ **Chu kỳ cập nhật riêng theo loại tài sản**: Crypto 10s, P2P 20s, Chứng khoán 30s, Vàng 60s — giảm tải gọi API không cần thiết.
-- 🕒 **Nhận biết giờ giao dịch**: Mã chứng khoán sàn VN (`.VN`) ngừng cập nhật ngoài giờ giao dịch (T2–T6, 9h–15h) sau khi đã có giá đóng cửa — tiết kiệm request.
-- 🔁 **Fallback nguồn chứng khoán**: Tự động thử `query2.finance.yahoo.com` khi `query1` bị lỗi/chặn.
-- 🌐 **Mở trang nguồn giá**: Chuột phải vào một mã và chọn **Mở trang nguồn** để mở trang tương ứng (Binance/Yahoo Finance/SJC) trên trình duyệt.
-- ↔️ **Sắp xếp lại / xóa mã**: Chuột phải vào một mã cụ thể để Di chuyển trái/phải hoặc Xóa mã khỏi thanh giá.
-- 🔔 **Cảnh báo giá**: Thêm `alert_above`/`alert_below` vào mã trong config để nhận highlight màu khi giá vượt ngưỡng (ghi log vào `ticker.log`).
-- 🎨 **Theme tùy chỉnh**: Chỉnh độ trong suốt và cỡ chữ trực tiếp trong cửa sổ Cài đặt (lưu vào `config.json` mục `theme`).
-- 🗂️ **Icon khay hệ thống (tùy chọn)**: Nếu cài thêm `pystray` + `Pillow`, ứng dụng có icon khay để Hiện/Ẩn nhanh mà không cần thoát.
-- 📝 **Ghi log**: Lỗi gọi API và cảnh báo giá được ghi vào `ticker.log` (tự động xoay vòng) để dễ dò lỗi.
+> `BTC:$82,281 ▼-0.9%  |  USDT:25,980đ  |  SJC:142,300,000đ  |  VNI:1,758đ  |  FPT:57,500đ  |  VN30:33,900đ`
 
 ---
 
-## 🛠️ Yêu cầu hệ thống & Cài đặt
+## ✨ Tính năng
 
-1. **Python 3.x** đã được cài đặt trên máy.
-2. Cài đặt các thư viện cần thiết bằng cách mở Command Prompt / PowerShell tại thư mục này và chạy:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Hiển thị & nguồn giá
+- **Đa nguồn**: Crypto & P2P (Binance), Vàng SJC (vnappmob), Chứng khoán/chỉ số VN (Yahoo Finance).
+- **Chu kỳ riêng theo loại**: Crypto 10s · P2P 20s · Chứng khoán 30s · Vàng 60s — giảm gọi API thừa.
+- **Tải song song** bằng `ThreadPoolExecutor`, không làm đơ giao diện.
+- **Nhận biết giờ giao dịch**: mã sàn VN (`.VN`) ngừng cập nhật ngoài giờ (T2–T6, 9h–15h) sau khi đã có giá đóng cửa.
+- **Offline cache**: mất mạng vẫn hiển thị giá gần nhất kèm dấu `*`; chưa có dữ liệu thì hiển thị `--`.
+- **Fallback nguồn chứng khoán**: tự thử `query2.finance.yahoo.com` khi `query1` lỗi/chặn.
+- **Tooltip chi tiết** khi rê chuột (cao/thấp/khối lượng…).
+
+### Vị trí & thao tác
+- **Kéo thả mọi chỗ** trên thanh; **tự hít mép** màn hình khi thả — theo *work area* nên **không đè lên taskbar**.
+- **Hỗ trợ đa màn hình** (kéo được sang màn phụ).
+- **Khóa vị trí** chống kéo nhầm và **Về vị trí mặc định** (menu chuột phải).
+- **Menu chuột phải theo mã**: mở trang nguồn giá, di chuyển trái/phải.
+
+### Cảnh báo giá
+- Thêm `alert_above` / `alert_below` cho mã → khi vượt ngưỡng: **nhấp nháy nền + âm thanh + thông báo khay (balloon)**, ghi log vào `ticker.log`.
+
+### Cửa sổ Cài đặt
+![Cửa sổ Cài đặt](assets/settings.png)
+
+- **Bảng thêm/sửa mã** trực quan (không cần gõ JSON) + **danh mục mã gợi ý** để thêm nhanh theo từng loại.
+- **Theme picker**: màu nền / màu chữ, font, cỡ chữ, độ mờ, và **preset** (Tối / Sáng / Trong suốt).
+- **Chỉnh kích thước**: đệm ngang & đệm dọc (độ dày thanh) độc lập với cỡ chữ.
+- **Xem trước realtime**: kéo/chọn là đổi ngay; bấm **Hủy** sẽ hoàn tác.
+- **Khởi động cùng Windows**: bật/tắt ngay trong Cài đặt.
+- **Icon khay hệ thống (tùy chọn)**: cài thêm `pystray` + `Pillow` để Hiện/Ẩn nhanh.
 
 ---
 
-## 🚀 Hướng dẫn sử dụng
+## 🖥️ Nền tảng
 
-1. **Chạy ứng dụng**:
-   ```bash
-   python ticker.py
-   ```
-2. **Di chuyển**: Nhấp chuột trái và kéo để di chuyển thanh giá.
-3. **Cài đặt (Đổi mã/Đổi nhãn)**:
-   - Nhấp đúp chuột trái vào thanh giá hoặc nhấp chuột phải chọn **Cài đặt** (Settings).
-   - Chỉnh sửa file JSON cấu hình trực tiếp trên cửa sổ ứng dụng và nhấn **Lưu Cấu Hình**.
-4. **Thoát**: Nhấp chuột phải chọn **Thoát**.
+Hiện ứng dụng **chỉ chạy trên Windows** (dùng các API riêng của Windows: nền trong suốt `-transparentcolor`, âm thanh `winsound`, registry autostart, đo kích thước desktop qua `ctypes`). macOS/Linux **chưa hỗ trợ** nếu không port lại các phần này.
 
 ---
 
-## 📝 Định dạng cấu hình JSON mẫu
+## 🛠️ Cài đặt
 
-Dưới đây là định dạng cấu hình hiển thị:
+Yêu cầu **Python 3.x** trên Windows.
+
+```bash
+pip install -r requirements.txt
+```
+
+`requests` + `urllib3` là bắt buộc; `pystray` + `Pillow` (tray icon) và `pytest` (chạy test) là tùy chọn.
+
+## 🚀 Chạy
+
+```bash
+python ticker.py
+```
+
+Hoặc chạy ẩn console (chỉ hiện thanh giá):
+
+```bash
+pythonw ticker.py
+```
+
+**Thao tác nhanh:**
+- Kéo chuột trái để di chuyển; thả gần mép sẽ tự canh sát mép.
+- Double‑click hoặc chuột phải → **Cài đặt** để mở cấu hình.
+- Chuột phải → **Khóa vị trí / Về vị trí mặc định / Tải lại ngay / Thoát**.
+
+---
+
+## ⚙️ Cấu hình (`config.json`)
+
+File `config.json` tự tạo lần đầu và tự lưu khi bạn chỉnh trong Cài đặt (được `.gitignore`).
+
+**Danh sách mã** — `symbols`:
 ```json
 [
     {"type": "crypto", "symbol": "BTC", "label": "BTC"},
-    {"type": "p2p", "symbol": "USDT", "label": "USDT"},
-    {"type": "gold", "symbol": "sjc", "label": "SJC"},
-    {"type": "stock", "symbol": "FPT.VN", "label": "FPT"}
+    {"type": "p2p",    "symbol": "USDT", "label": "USDT"},
+    {"type": "gold",   "symbol": "sjc",  "label": "SJC"},
+    {"type": "stock",  "symbol": "^VNINDEX.VN", "label": "VNI"},
+    {"type": "stock",  "symbol": "FPT.VN", "label": "FPT"},
+    {"type": "stock",  "symbol": "E1VFVN30.VN", "label": "VN30"}
 ]
 ```
 
-*Giải thích các loại `type`:*
-- `crypto`: Binance spot price. `symbol` là mã token (ví dụ: `BTC`, `ETH`).
-- `p2p`: Binance P2P. `symbol` là loại asset cần theo dõi (ví dụ: `USDT`, `FDUSD`).
-- `gold`: Giá vàng SJC Việt Nam. `symbol` là `sjc`.
-- `stock`: Chứng khoán Yahoo Finance. `symbol` cần định dạng theo Yahoo (ví dụ: `FPT.VN`, `^VNINDEX.VN` cho chỉ số VN-Index).
+| `type` | Nguồn | `symbol` ví dụ |
+|--------|-------|----------------|
+| `crypto` | Binance spot | `BTC`, `ETH` |
+| `p2p` | Binance P2P (VND) | `USDT`, `USDC` |
+| `gold` | Vàng SJC (vnappmob) | `sjc` |
+| `stock` | Yahoo Finance | `FPT.VN`, `^VNINDEX.VN` (chỉ số), `E1VFVN30.VN` |
 
-*Tùy chọn cảnh báo giá (mọi `type`):*
+**Cảnh báo giá** (tùy chọn, mọi `type`):
 ```json
 {"type": "crypto", "symbol": "BTC", "label": "BTC", "alert_above": 70000, "alert_below": 60000}
 ```
-Khi giá vượt `alert_above` hoặc xuống dưới `alert_below`, mã sẽ được highlight màu vàng tạm thời và ghi log vào `ticker.log`.
 
-*Mục `theme` trong `config.json` (tự động lưu khi chỉnh trong cửa sổ Cài đặt):*
+**Giao diện** — `theme` (tự lưu khi chỉnh trong Cài đặt):
 ```json
-{"font_family": "Consolas", "font_size": 9, "opacity": 1.0, "fg": "white",
- "positive_color": "#a6e3a1", "negative_color": "#f38ba8"}
+{
+  "font_family": "Consolas", "font_size": 9,
+  "bg": "#11111b", "fg": "white",
+  "positive_color": "#a6e3a1", "negative_color": "#f38ba8",
+  "separator_color": "#585b70", "alert_color": "#f9e2af",
+  "opacity": 1.0, "pad_x": 10, "pad_y": 2
+}
 ```
+> Mẹo: đặt `"bg": "#000001"` để lấy lại kiểu nền **trong suốt hoàn toàn** (chỉ nổi chữ).
 
 ---
 
-## ⚙️ Cấu hình khởi động cùng Windows (Startup)
+## 📦 Đóng gói file chạy (.exe) cho Windows
 
-Để ứng dụng tự động chạy mỗi khi bạn mở máy tính:
-1. Nhấn tổ hợp phím `Win + R`, gõ `shell:startup` và nhấn **Enter**. Thư mục Startup của Windows sẽ hiện ra.
-2. Tạo một file Shortcut (hoặc file `.bat` trung gian) trỏ đến file chạy của ứng dụng:
-   - Nội dung file `.bat` (ví dụ `run_ticker.bat`):
-     ```bat
-     @echo off
-     cd /d "Đường_dẫn_thư_mục_chứa_code"
-     start pythonw.exe ticker.py
-     ```
-   *(Sử dụng `pythonw.exe` thay vì `python.exe` giúp chạy ẩn cửa sổ console đen chỉ hiển thị thanh giá).*
-3. Kéo file `.bat` này vào thư mục Startup vừa mở.
+Tạo một file `.exe` chạy độc lập (không cần cài Python) bằng [PyInstaller](https://pyinstaller.org/):
+
+```bash
+pip install pyinstaller
+pyinstaller --noconsole --onefile --name DesktopTickerBar ticker.py
+```
+
+File chạy nằm ở `dist/DesktopTickerBar.exe`. `--noconsole` để không hiện cửa sổ console đen.
+
+---
+
+## 🧪 Phát triển & kiểm thử
+
+```bash
+python -m pytest tests/ -q
+```
+
+Logic thuần (định dạng giá, kẹp/hít cửa sổ, parse cấu hình…) được tách riêng để unit‑test; test dùng provider giả, **không gọi API thật** và không cần màn hình. Xem thêm [`CLAUDE.md`](CLAUDE.md) để hiểu kiến trúc & mô hình threading.
