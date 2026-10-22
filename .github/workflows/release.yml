@@ -1,6 +1,6 @@
-name: Build Windows EXE
+name: Build Release
 
-# Tự build .exe khi push tag vX.Y.Z (và cho phép chạy tay từ tab Actions).
+# Push tag vX.Y.Z -> build .exe (Windows) và .app (macOS), đính vào Release.
 on:
   push:
     tags:
@@ -8,41 +8,83 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # cần quyền ghi để đính file vào Release
+  contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
+    env:
+      # Thêm 2 secrets này trong repo (Settings > Secrets) để tự ký số .exe:
+      #   WINDOWS_CERT_BASE64  = nội dung file .pfx mã hoá base64
+      #   WINDOWS_CERT_PASSWORD = mật khẩu .pfx
+      SIGN_CERT: ${{ secrets.WINDOWS_CERT_BASE64 }}
+      SIGN_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Cài phụ thuộc
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-
       - name: Build .exe
         run: >
           pyinstaller --noconsole --onefile --name DesktopTickerBar
           --icon assets/icon.ico --version-file assets/version_info.txt
           --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets"
           ticker.py
-
-      # Khi chạy tay (workflow_dispatch): tải .exe dạng artifact để tự tải về.
+      - name: Ký số .exe (tùy chọn — chỉ chạy khi có secrets)
+        if: ${{ env.SIGN_CERT != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_CERT))
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+                Sort-Object FullName | Select-Object -Last 1
+          & $st.FullName sign /f $pfx /p $env:SIGN_PW /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 dist\DesktopTickerBar.exe
       - name: Tải artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DesktopTickerBar
+          name: DesktopTickerBar-windows
           path: dist/DesktopTickerBar.exe
-
-      # Khi push tag: đính .exe vào Release tương ứng.
       - name: Đính vào Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/DesktopTickerBar.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cài phụ thuộc
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build .app
+        run: >
+          pyinstaller --windowed --name DesktopTickerBar
+          --icon assets/icon.icns
+          --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets"
+          ticker.py
+      - name: Nén .app thành .zip
+        run: |
+          cd dist
+          zip -r -y DesktopTickerBar-macos.zip DesktopTickerBar.app
+      - name: Tải artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopTickerBar-macos
+          path: dist/DesktopTickerBar-macos.zip
+      - name: Đính vào Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DesktopTickerBar-macos.zip

@@ -43,7 +43,12 @@ Theo dõi nhanh **Crypto / P2P (Binance)**, **Vàng SJC (vnappmob)** và **Chứ
 
 ## 🖥️ Nền tảng
 
-Hiện ứng dụng **chỉ chạy trên Windows** (dùng các API riêng của Windows: nền trong suốt `-transparentcolor`, âm thanh `winsound`, registry autostart, đo kích thước desktop qua `ctypes`). macOS/Linux **chưa hỗ trợ** nếu không port lại các phần này.
+- **Windows**: đầy đủ tính năng (nền trong suốt tùy chọn, âm thanh cảnh báo, autostart qua registry, hít mép theo work area đa màn hình).
+- **macOS**: **có hỗ trợ** — tự điều chỉnh theo hệ điều hành:
+  - Âm thanh cảnh báo dùng `afplay`; autostart qua **LaunchAgent** (`~/Library/LaunchAgents`).
+  - Nền trong suốt `-transparentcolor` (chỉ Windows) được bỏ qua — thanh dùng nền đặc.
+  - Kẹp/hít cửa sổ dùng kích thước màn hình chính (không có work area đa màn hình như Windows).
+- **Linux**: chạy được ở mức cơ bản (âm thanh là chuông terminal; chưa có autostart).
 
 ---
 
@@ -118,18 +123,44 @@ File `config.json` tự tạo lần đầu và tự lưu khi bạn chỉnh trong
 
 ---
 
-## 📦 Đóng gói file chạy (.exe) cho Windows
+## 📦 Đóng gói file chạy ([PyInstaller](https://pyinstaller.org/))
 
-Tạo một file `.exe` chạy độc lập (không cần cài Python) bằng [PyInstaller](https://pyinstaller.org/):
+**Tự động (khuyến nghị):** repo có sẵn GitHub Actions — chỉ cần **push tag** là CI tự build cả 2 bản và đính vào Release:
+```bash
+git tag v1.1.0 && git push origin v1.1.0
+```
+→ `DesktopTickerBar.exe` (Windows) và `DesktopTickerBar-macos.zip` (macOS) tự xuất hiện ở Release.
 
+**Thủ công — Windows (.exe):**
 ```bash
 pip install pyinstaller
 pyinstaller --noconsole --onefile --name DesktopTickerBar ^
   --icon assets/icon.ico --version-file assets/version_info.txt ^
   --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets" ticker.py
 ```
+Kết quả: `dist/DesktopTickerBar.exe` (có icon + thông tin phiên bản). *(PowerShell/CMD dùng `^` để xuống dòng.)*
 
-File chạy nằm ở `dist/DesktopTickerBar.exe` (đã có icon + thông tin phiên bản). `--noconsole` để không hiện cửa sổ console đen. *(Trên PowerShell/CMD dùng `^` để xuống dòng; gộp 1 dòng cũng được.)*
+**Thủ công — macOS (.app):**
+```bash
+pip install pyinstaller
+pyinstaller --windowed --name DesktopTickerBar \
+  --icon assets/icon.icns \
+  --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets" ticker.py
+```
+Kết quả: `dist/DesktopTickerBar.app`. *(macOS dùng dấu `:` cho `--add-data`.)*
+
+### 🔏 Ký số (code-signing) — tùy chọn
+
+File `.exe`/`.app` chưa ký số sẽ bị **SmartScreen (Windows)** hoặc **Gatekeeper (macOS)** cảnh báo khi chạy lần đầu. Để hết cảnh báo cần **chứng chỉ ký số mua từ CA** (ví dụ DigiCert, Sectigo) — self-signed không đủ.
+
+Workflow đã cài sẵn bước ký số **tự động cho Windows**: thêm 2 secrets trong **Settings → Secrets and variables → Actions** là CI sẽ tự ký:
+- `WINDOWS_CERT_BASE64` — file `.pfx` mã hoá base64 (`base64 cert.pfx`)
+- `WINDOWS_CERT_PASSWORD` — mật khẩu `.pfx`
+
+Ký thủ công bằng `signtool` (Windows SDK):
+```bash
+signtool sign /f cert.pfx /p <mật_khẩu> /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\DesktopTickerBar.exe
+```
 
 ---
 

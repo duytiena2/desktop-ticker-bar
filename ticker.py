@@ -54,6 +54,12 @@ KEEP_ON_TOP_INTERVAL = 2000  # Chu kỳ giữ cửa sổ ở trên cùng (ms)
 SNAP_THRESHOLD = 20          # Khoảng cách (px) để tự hít vào mép màn hình khi kéo
 AUTOSTART_NAME = "DesktopTickerBar"  # Tên value trong HKCU\...\Run (khởi động cùng Windows)
 AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+# Nền tảng — app tối ưu cho Windows; macOS chạy được với một số tính năng giảm nhẹ.
+IS_WINDOWS = sys.platform.startswith("win")
+IS_MAC = sys.platform == "darwin"
+MAC_LAUNCH_LABEL = "com.duytiena2.desktoptickerbar"
+MAC_LAUNCH_AGENT = os.path.expanduser(f"~/Library/LaunchAgents/{MAC_LAUNCH_LABEL}.plist")
 TRANSPARENT_COLOR = "#000001"
 ALERT_FLASH_MS = 3000        # Thời gian highlight khi có cảnh báo giá (ms)
 
@@ -681,6 +687,7 @@ class TickerApp:
         self._tray_icon = None
         self._locked = False         # Khóa vị trí: chặn kéo thả khi bật
         self._lock_var = None        # tk.BooleanVar đồng bộ trạng thái khóa trên menu
+        self._icon_img = None        # tk.PhotoImage icon cửa sổ (tái dùng, đa nền tảng)
 
         self._load_and_apply_config()
         self._setup_ui()
@@ -762,13 +769,15 @@ class TickerApp:
         # Vẫn giữ -transparentcolor để ai muốn nền trong suốt chỉ cần đặt
         # theme["bg"] = TRANSPARENT_COLOR; mặc định bg khác màu này nên thanh đặc,
         # không bị "xuyên chuột" → kéo được ở mọi chỗ trên thanh.
-        root.attributes("-transparentcolor", TRANSPARENT_COLOR)
+        if IS_WINDOWS:
+            # -transparentcolor chỉ có trên Windows; nền đặc nên bỏ qua ở macOS/Linux.
+            try:
+                root.attributes("-transparentcolor", TRANSPARENT_COLOR)
+            except Exception:
+                pass
         root.attributes("-alpha", self.theme.get("opacity", 1.0))
         root.geometry(f"{self._width}x{self._height}+{self._x}+{self._y}")
-        try:
-            root.iconbitmap(ICON_ICO)  # icon cho taskbar/alt-tab (nếu có)
-        except Exception:
-            pass
+        self._set_window_icon(root)
 
         # Trạng thái kéo thả
         self._drag = {"x": 0, "y": 0, "win_x": self._x, "win_y": self._y, "dragging": False}
@@ -786,6 +795,15 @@ class TickerApp:
         self._bind_widget_events(root)
 
         self._keep_on_top()
+
+    def _set_window_icon(self, win):
+        """Đặt icon cửa sổ bằng PNG qua iconphoto (chạy trên cả Windows lẫn macOS)."""
+        try:
+            if self._icon_img is None:
+                self._icon_img = tk.PhotoImage(file=ICON_PNG)
+            win.iconphoto(False, self._icon_img)
+        except Exception:
+            pass
 
     def _setup_context_menu(self):
         """Khởi tạo menu chuột phải (nền thanh giá)."""
@@ -1142,8 +1160,14 @@ class TickerApp:
     def _notify_alert(self, data):
         """Phát âm thanh + balloon tray khi giá vượt ngưỡng (ngoài việc flash nền)."""
         try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            if IS_WINDOWS:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            elif IS_MAC:
+                import subprocess
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
+            else:
+                print("\a", end="", flush=True)  # chuông terminal (Linux)
         except Exception:
             pass
         if self._tray_icon is not None:
@@ -1369,14 +1393,31 @@ class TickerApp:
 
     @staticmethod
     def _autostart_command():
-        """Lệnh chạy khi khởi động Windows (ưu tiên pythonw.exe để ẩn console)."""
+        """Lệnh chạy khi khởi động (ưu tiên pythonw.exe trên Windows để ẩn console)."""
         pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        exe = pyw if os.path.exists(pyw) else sys.executable
+        exe = pyw if (IS_WINDOWS and os.path.exists(pyw)) else sys.executable
         return f'"{exe}" "{os.path.abspath(__file__)}"'
 
+    def _is_autostart_enabled(self):
+        """True nếu đã bật khởi động cùng hệ điều hành."""
+        if IS_WINDOWS:
+            return self._is_autostart_win()
+        if IS_MAC:
+            return os.path.exists(MAC_LAUNCH_AGENT)
+        return False
+
+    def _set_autostart(self, enabled):
+        """Bật/tắt khởi động cùng hệ điều hành (Windows: registry; macOS: LaunchAgent)."""
+        if IS_WINDOWS:
+            return self._set_autostart_win(enabled)
+        if IS_MAC:
+            return self._set_autostart_mac(enabled)
+        logger.info("Autostart chưa hỗ trợ trên nền tảng này.")
+        return False
+
+    # — Windows: HKCU\...\Run —
     @staticmethod
-    def _is_autostart_enabled():
-        """True nếu đã bật khởi động cùng Windows (có value trong HKCU\\...\\Run)."""
+    def _is_autostart_win():
         try:
             import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY)
@@ -1390,8 +1431,7 @@ class TickerApp:
         except Exception:
             return False
 
-    def _set_autostart(self, enabled):
-        """Bật/tắt khởi động cùng Windows qua registry Run key (HKCU)."""
+    def _set_autostart_win(self, enabled):
         try:
             import winreg
             key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
@@ -1409,7 +1449,38 @@ class TickerApp:
                 winreg.CloseKey(key)
             return True
         except Exception as e:
-            logger.warning("Không đặt được autostart: %s", e)
+            logger.warning("Không đặt được autostart (Windows): %s", e)
+            return False
+
+    # — macOS: LaunchAgent plist —
+    def _set_autostart_mac(self, enabled):
+        try:
+            import subprocess
+            if enabled:
+                plist = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                    '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                    '<plist version="1.0"><dict>\n'
+                    f'  <key>Label</key><string>{MAC_LAUNCH_LABEL}</string>\n'
+                    '  <key>ProgramArguments</key><array>\n'
+                    f'    <string>{sys.executable}</string>\n'
+                    f'    <string>{os.path.abspath(__file__)}</string>\n'
+                    '  </array>\n'
+                    '  <key>RunAtLoad</key><true/>\n'
+                    '</dict></plist>\n'
+                )
+                os.makedirs(os.path.dirname(MAC_LAUNCH_AGENT), exist_ok=True)
+                with open(MAC_LAUNCH_AGENT, "w", encoding="utf-8") as f:
+                    f.write(plist)
+                subprocess.run(["launchctl", "load", "-w", MAC_LAUNCH_AGENT], check=False)
+            else:
+                if os.path.exists(MAC_LAUNCH_AGENT):
+                    subprocess.run(["launchctl", "unload", "-w", MAC_LAUNCH_AGENT], check=False)
+                    os.remove(MAC_LAUNCH_AGENT)
+            return True
+        except Exception as e:
+            logger.warning("Không đặt được autostart (macOS): %s", e)
             return False
 
     # ── Settings Window ────────────────────────────────────
@@ -1439,10 +1510,7 @@ class TickerApp:
         win.attributes("-topmost", True)
         win.configure(bg=BASE)
         self._settings_win = win
-        try:
-            win.iconbitmap(ICON_ICO)
-        except Exception:
-            pass
+        self._set_window_icon(win)
         # Chụp theme gốc để Hủy/đóng-không-lưu có thể hoàn tác live-preview
         self._settings_orig_theme = dict(self.theme)
         self._theme_committed = False
