@@ -81,6 +81,8 @@ DEFAULT_THEME = {
     "separator_color": "#585b70",
     "alert_color": "#f9e2af",
     "opacity": 1.0,
+    "pad_x": 10,  # Đệm ngang (px mỗi bên) — tăng để thanh rộng/thoáng hơn
+    "pad_y": 2,   # Đệm dọc (px mỗi bên) — tăng để thanh cao/dày hơn
 }
 
 # Preset theme chọn nhanh trong Settings (preset "Trong suốt" dùng lại TRANSPARENT_COLOR
@@ -246,6 +248,12 @@ def get_virtual_screen():
     except Exception:
         pass
     return None
+
+
+def compute_bar_size(content_w, content_h, pad_x, pad_y, min_w=80, min_h=18):
+    """Tính (width, height) cửa sổ thanh giá từ kích thước nội dung + đệm, có cận tối thiểu."""
+    return (max(min_w, int(content_w) + 2 * int(pad_x)),
+            max(min_h, int(content_h) + 2 * int(pad_y)))
 
 
 def default_label(symbol):
@@ -717,7 +725,9 @@ class TickerApp:
 
         # Frame chứa tất cả các nhãn giá (cho phép hiển thị nhiều màu và hover)
         self.container_frame = tk.Frame(root, bg=self.theme["bg"])
-        self.container_frame.pack(expand=True, fill="both", padx=10)
+        self.container_frame.pack(expand=True, fill="both",
+                                  padx=self.theme.get("pad_x", 10),
+                                  pady=self.theme.get("pad_y", 2))
 
         # Tooltip dùng font theo theme (nhất quán với thanh giá)
         self.tooltip.set_font((self.theme["font_family"], self.theme["font_size"]))
@@ -1204,8 +1214,11 @@ class TickerApp:
         if not self.symbol_widgets:
             return
         self.root.update_idletasks()
-        req_w = max(80, self.container_frame.winfo_reqwidth() + 20)
-        req_h = max(25, self.container_frame.winfo_reqheight() + 4)
+        req_w, req_h = compute_bar_size(
+            self.container_frame.winfo_reqwidth(),
+            self.container_frame.winfo_reqheight(),
+            self.theme.get("pad_x", 10), self.theme.get("pad_y", 2),
+        )
         if req_w == self._width and req_h == self._height:
             return
 
@@ -1287,6 +1300,8 @@ class TickerApp:
         self.root.attributes("-alpha", self.theme.get("opacity", 1.0))
         self.root.configure(bg=self.theme["bg"])
         self.container_frame.configure(bg=self.theme["bg"])
+        self.container_frame.pack_configure(padx=self.theme.get("pad_x", 10),
+                                            pady=self.theme.get("pad_y", 2))
         self.tooltip.set_font((self.theme["font_family"], self.theme["font_size"]))
         for _key, widgets in list(self.symbol_widgets.items()):
             widgets["frame"].destroy()
@@ -1522,6 +1537,8 @@ class TickerApp:
         font_family_var = tk.StringVar(value=self.theme.get("font_family", "Consolas"))
         opacity_var = tk.DoubleVar(value=self.theme.get("opacity", 1.0))
         font_size_var = tk.IntVar(value=self.theme.get("font_size", 9))
+        padx_var = tk.IntVar(value=self.theme.get("pad_x", 10))
+        pady_var = tk.IntVar(value=self.theme.get("pad_y", 2))
         autostart_var = tk.BooleanVar(value=self._is_autostart_enabled())
 
         def make_swatch(parent, var):
@@ -1587,10 +1604,22 @@ class TickerApp:
                  troughcolor=S0, activebackground=BLUE, length=210,
                  font=(UI, 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
 
+        tk.Label(tf, text="Đệm ngang:", **LBL).grid(row=6, column=0, sticky="w", pady=4)
+        tk.Scale(tf, from_=0, to=40, resolution=1, orient="horizontal",
+                 variable=padx_var, bg=BASE, fg=TEXT, highlightthickness=0,
+                 troughcolor=S0, activebackground=BLUE, length=210,
+                 font=(UI, 8)).grid(row=6, column=1, sticky="w", padx=(8, 0))
+
+        tk.Label(tf, text="Đệm dọc (độ dày):", **LBL).grid(row=7, column=0, sticky="w", pady=4)
+        tk.Scale(tf, from_=0, to=24, resolution=1, orient="horizontal",
+                 variable=pady_var, bg=BASE, fg=TEXT, highlightthickness=0,
+                 troughcolor=S0, activebackground=BLUE, length=210,
+                 font=(UI, 8)).grid(row=7, column=1, sticky="w", padx=(8, 0))
+
         tk.Checkbutton(tf, text="Khởi động cùng Windows", variable=autostart_var,
                        bg=BASE, fg=TEXT, selectcolor=S0, activebackground=BASE,
                        activeforeground=TEXT, font=(UI, 9)).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         def save():
             try:
@@ -1608,6 +1637,8 @@ class TickerApp:
                 self.theme["font_family"] = font_family_var.get()
                 self.theme["bg"] = bg_var.get()
                 self.theme["fg"] = fg_var.get()
+                self.theme["pad_x"] = int(padx_var.get())
+                self.theme["pad_y"] = int(pady_var.get())
                 self._apply_theme()
                 self._set_autostart(bool(autostart_var.get()))
 

@@ -16,6 +16,7 @@ from ticker import (
     calc_tooltip_pos,
     clamp_window_pos,
     snap_to_edges,
+    compute_bar_size,
     parse_symbol_rows,
     default_label,
     SYMBOL_PRESETS,
@@ -431,6 +432,17 @@ def test_default_label_strips_prefix_and_suffix():
     assert default_label("FPT.VN") == "FPT"
     assert default_label("BTC") == "BTC"
     assert default_label("sjc") == "sjc"
+
+
+def test_compute_bar_size_adds_padding():
+    # content 200x17, đệm 10/2 -> 220 x max(18, 21)=21
+    assert compute_bar_size(200, 17, 10, 2) == (220, 21)
+    # đệm dọc lớn làm thanh cao hơn
+    assert compute_bar_size(200, 17, 10, 12) == (220, 41)
+
+
+def test_compute_bar_size_respects_minimums():
+    assert compute_bar_size(10, 5, 0, 0, min_w=80, min_h=18) == (80, 18)
 
 
 def test_symbol_presets_types_valid_and_nonempty():
