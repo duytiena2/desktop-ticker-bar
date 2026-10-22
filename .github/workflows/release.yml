@@ -37,6 +37,7 @@ jobs:
           pyinstaller --noconsole --onefile --name DesktopTickerBar
           --icon assets/icon.ico --version-file assets/version_info.txt
           --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets"
+          --exclude-module PIL --exclude-module pystray
           ticker.py
       - name: Ký số .exe (tùy chọn — chỉ chạy khi có secrets)
         if: ${{ env.SIGN_CERT != '' }}
@@ -77,6 +78,7 @@ jobs:
           pyinstaller --windowed --noupx --name DesktopTickerBar
           --icon assets/icon.icns
           --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets"
+          --exclude-module PIL --exclude-module pystray
           ticker.py
       - name: Nén .app thành .zip
         run: |

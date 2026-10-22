@@ -136,18 +136,22 @@ git tag v1.1.0 && git push origin v1.1.0
 pip install pyinstaller
 pyinstaller --noconsole --onefile --name DesktopTickerBar ^
   --icon assets/icon.ico --version-file assets/version_info.txt ^
-  --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets" ticker.py
+  --add-data "assets/icon.ico;assets" --add-data "assets/icon.png;assets" ^
+  --exclude-module PIL --exclude-module pystray ticker.py
 ```
 Kết quả: `dist/DesktopTickerBar.exe` (có icon + thông tin phiên bản). *(PowerShell/CMD dùng `^` để xuống dòng.)*
 
-> 💡 **Giảm dung lượng**: cài [UPX](https://upx.github.io/) (`choco install upx`) trước khi build — PyInstaller tự nén `.exe` nhỏ hơn ~30–45% mà vẫn đủ tính năng. CI đã bật sẵn UPX cho bản Windows. *(macOS không nén UPX vì dễ hỏng binary.)*
+> 💡 **Giảm dung lượng**: (1) cài [UPX](https://upx.github.io/) (`choco install upx`) để PyInstaller tự nén; (2) `--exclude-module PIL --exclude-module pystray` để không nhúng thư viện tray. CI đã bật sẵn cả hai cho bản Windows. *(macOS không nén UPX vì dễ hỏng binary.)*
+>
+> ⚠️ **Lưu ý**: bản đóng gói (CI) **không có icon khay (tray)** để nhẹ hơn — icon cửa sổ/taskbar vẫn còn. Muốn dùng tray thì **chạy từ source** sau khi `pip install pystray Pillow`.
 
 **Thủ công — macOS (.app):**
 ```bash
 pip install pyinstaller
-pyinstaller --windowed --name DesktopTickerBar \
+pyinstaller --windowed --noupx --name DesktopTickerBar \
   --icon assets/icon.icns \
-  --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets" ticker.py
+  --add-data "assets/icon.png:assets" --add-data "assets/icon.ico:assets" \
+  --exclude-module PIL --exclude-module pystray ticker.py
 ```
 Kết quả: `dist/DesktopTickerBar.app`. *(macOS dùng dấu `:` cho `--add-data`.)*
 
