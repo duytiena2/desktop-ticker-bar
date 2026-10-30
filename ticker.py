@@ -177,6 +177,24 @@ def format_change_display(change_pct, theme=None):
     return text, color
 
 
+def compute_change_pct(baseline, price):
+    """Tính % thay đổi của ``price`` so với ``baseline`` (giá tham chiếu).
+
+    Dùng cho chứng khoán (baseline = giá đóng cửa phiên trước) và cho các nguồn
+    không cấp sẵn % (vàng/P2P) với baseline = giá nền đầu phiên. Trả ``None``
+    khi baseline không hợp lệ (None hoặc 0) để tránh chia cho 0.
+    """
+    if baseline is None or price is None:
+        return None
+    try:
+        baseline = float(baseline)
+        if baseline == 0:
+            return None
+        return (float(price) - baseline) / baseline * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 def vn_market_open(lt=None):
     """True nếu đang trong giờ giao dịch sàn VN (Thứ 2–6, 09:00–15:00 giờ địa phương).
 
@@ -632,12 +650,15 @@ class PriceProvider:
                 if result:
                     meta = result[0]["meta"]
                     price = float(meta["regularMarketPrice"])
+                    # % thay đổi trong ngày = (giá hiện tại - giá đóng cửa phiên trước)
+                    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+                    change_pct = compute_change_pct(prev_close, price)
                     extra_info = {
                         "high": float(meta.get("regularMarketDayHigh", 0)) or None,
                         "low": float(meta.get("regularMarketDayLow", 0)) or None,
                         "volume": float(meta.get("regularMarketVolume", 0)) or None
                     }
-                    return price, None, extra_info
+                    return price, change_pct, extra_info
             except Exception as e:
                 logger.warning("Stock API error (%s @ %s): %s", symbol, host, e)
         return None, None, None
@@ -671,7 +692,7 @@ class TickerApp:
         self.last_prices = {}
         self._prices_lock = threading.Lock()
         # Bảo vệ state chia sẻ giữa worker thread và main/UI thread:
-        # _next_fetch, _last_rendered, _alert_state.
+        # _next_fetch, _last_rendered, _alert_state, _session_baseline.
         self._state_lock = threading.Lock()
         self._reload_event = threading.Event()
         self.symbols = DEFAULT_SYMBOLS[:]
@@ -683,6 +704,9 @@ class TickerApp:
         self._next_fetch = {}
         self._last_rendered = {}
         self._alert_state = {}
+        # Giá nền đầu phiên cho các nguồn không cấp sẵn % (vàng/P2P) — để suy ra
+        # % thay đổi so với lúc mở app. Mất khi khởi động lại (không persist).
+        self._session_baseline = {}
         self._last_order_sig = None  # Chữ ký thứ tự lần render gần nhất (để tránh re-pack thừa)
         self._tray_icon = None
         self._locked = False         # Khóa vị trí: chặn kéo thả khi bật
@@ -1107,6 +1131,20 @@ class TickerApp:
             return True
         return False
 
+    def _change_from_baseline(self, cache_key, price):
+        """Suy ra % thay đổi so với giá nền đầu phiên cho nguồn không cấp sẵn %.
+
+        Lần đầu thấy mã → ghi nhận giá nền và trả 0.0% (mốc so với lúc mở app).
+        Chỉ đụng ``_state_lock`` (không lồng ``_prices_lock``) để giữ đúng quy ước
+        thứ tự lock.
+        """
+        with self._state_lock:
+            baseline = self._session_baseline.get(cache_key)
+            if baseline is None:
+                self._session_baseline[cache_key] = price
+                baseline = price
+        return compute_change_pct(baseline, price)
+
     def _fetch_single(self, item):
         """Lấy giá cho 1 mã, có cache fallback khi lỗi mạng."""
         symbol_type = item["type"]
@@ -1119,6 +1157,10 @@ class TickerApp:
         is_fallback = False
 
         if price is not None:
+            # Nguồn không trả sẵn % (vàng/P2P) → suy ra từ giá nền đầu phiên,
+            # rồi lưu luôn vào cache để lần fallback sau vẫn hiển thị được %.
+            if change_pct is None:
+                change_pct = self._change_from_baseline(cache_key, price)
             with self._prices_lock:
                 self.last_prices[cache_key] = {
                     "price": price,
@@ -1317,7 +1359,12 @@ class TickerApp:
         with ThreadPoolExecutor(max_workers=5) as executor:
             while True:
                 now = time.time()
+                # Đọc cờ forced rồi clear NGAY — nếu clear ở cuối vòng (sau wait),
+                # cờ đã bị xoá trước khi đọc ở vòng kế nên forced luôn False,
+                # khiến _force_reload() không thực sự bỏ qua chu kỳ/giờ giao dịch.
                 forced = self._reload_event.is_set()
+                if forced:
+                    self._reload_event.clear()
 
                 # Chụp nhanh danh sách symbols để tránh race khi main thread sửa list
                 symbols_snapshot = list(self.symbols)
@@ -1360,8 +1407,10 @@ class TickerApp:
                             snapshot = dict(self._last_rendered)
                         self.root.after(0, lambda d=snapshot: self._render_symbols(d))
 
-                self._reload_event.wait(TICK_INTERVAL)
-                self._reload_event.clear()
+                # Nếu đang forced, bỏ qua chờ để fetch ngay lập tức; ngược lại
+                # chờ tối đa TICK_INTERVAL hoặc đến khi có _force_reload().
+                if not forced:
+                    self._reload_event.wait(TICK_INTERVAL)
 
     def _force_reload(self):
         """Kích hoạt tải lại dữ liệu ngay lập tức."""
@@ -1807,6 +1856,9 @@ class TickerApp:
                 self.theme["pad_x"] = int(padx_var.get())
                 self.theme["pad_y"] = int(pady_var.get())
                 self._apply_theme()
+                # _apply_theme() huỷ toàn bộ widget mã -> vẽ lại ngay từ cache để
+                # thanh bar không bị trống/biến mất trong lúc chờ fetch mới.
+                self._rerender_now()
                 self._set_autostart(bool(autostart_var.get()))
 
                 self._save_config(symbols=new_symbols, theme=self.theme)

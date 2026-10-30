@@ -26,6 +26,7 @@ from ticker import (
     format_crypto_usd,
     format_price_text,
     format_change_display,
+    compute_change_pct,
     DEFAULT_THEME,
 )
 
@@ -43,6 +44,7 @@ def _make_app(provider=None):
     app._state_lock = threading.Lock()
     app._prices_lock = threading.Lock()
     app._alert_state = {}
+    app._session_baseline = {}
     app.last_prices = {}
     app.theme = DEFAULT_THEME.copy()
     app.provider = provider
@@ -104,6 +106,21 @@ def test_format_change_display_none():
     text, color = format_change_display(None, DEFAULT_THEME)
     assert text == ""
     assert color == DEFAULT_THEME["fg"]
+
+
+# ── compute_change_pct ─────────────────────────────────────
+
+def test_compute_change_pct_basic():
+    assert compute_change_pct(100, 105) == pytest.approx(5.0)
+    assert compute_change_pct(100, 95) == pytest.approx(-5.0)
+    assert compute_change_pct(100, 100) == 0.0
+
+
+def test_compute_change_pct_invalid_baseline():
+    assert compute_change_pct(None, 100) is None
+    assert compute_change_pct(0, 100) is None
+    assert compute_change_pct(100, None) is None
+    assert compute_change_pct("x", 100) is None
 
 
 # ── TickerApp._validate_symbols ────────────────────────────
@@ -207,6 +224,32 @@ def test_fetch_single_triggers_alert():
     assert res["alert"] is True
 
 
+def test_fetch_single_gold_baseline_first_then_change():
+    """Vàng không có % từ API → lần đầu lấy nền (0.0%), lần sau tính so với nền."""
+    app = _make_app(FakeProvider((14100.0, None, {"type": "SJC"})))
+    item = {"type": "gold", "symbol": "sjc", "label": "SJC"}
+
+    res1 = app._fetch_single(item)
+    assert res1["change_text"] == "▲+0.0%"           # lần đầu = mốc nền
+    assert app._session_baseline["gold_sjc"] == 14100.0
+
+    # Giá tăng 1% ở lần sau → so với nền 14100
+    app.provider.ret = (14241.0, None, {"type": "SJC"})
+    res2 = app._fetch_single(item)
+    assert res2["change_text"] == "▲+1.0%"
+    # % suy ra cũng được lưu vào cache để fallback dùng lại
+    assert app.last_prices["gold_sjc"]["change_pct"] == pytest.approx(1.0)
+
+
+def test_fetch_single_stock_change_passthrough():
+    """Chứng khoán đã có % từ provider → dùng thẳng, không đụng baseline."""
+    app = _make_app(FakeProvider((95000.0, -2.0, None)))
+    item = {"type": "stock", "symbol": "FPT.VN", "label": "FPT"}
+    res = app._fetch_single(item)
+    assert res["change_text"] == "▼-2.0%"
+    assert "stock_FPT.VN" not in app._session_baseline
+
+
 # ── vn_market_open ─────────────────────────────────────────
 
 def test_market_open_weekday_trading_hours():
@@ -278,6 +321,31 @@ def test_get_stock_price_both_hosts_fail():
     provider.session = _FakeSession([_FakeResp(500), _FakeResp(500)])
     price, change, extra = provider.get_stock_price("FPT.VN")
     assert price is None
+
+
+def test_get_stock_price_computes_change_from_prev_close():
+    chart = {
+        "chart": {"result": [{"meta": {
+            "regularMarketPrice": 102000,
+            "chartPreviousClose": 100000,
+            "regularMarketDayHigh": 103000,
+            "regularMarketDayLow": 99000,
+            "regularMarketVolume": 1000,
+        }}]}
+    }
+    provider = PriceProvider()
+    provider.session = _FakeSession([_FakeResp(200, chart)])
+    price, change, extra = provider.get_stock_price("FPT.VN")
+    assert price == 102000
+    assert change == pytest.approx(2.0)
+
+
+def test_get_stock_price_change_none_without_prev_close():
+    provider = PriceProvider()
+    provider.session = _FakeSession([_FakeResp(200, _VALID_CHART)])
+    price, change, extra = provider.get_stock_price("FPT.VN")
+    assert price == 95000
+    assert change is None
 
 
 # ── Drag / Mouse Release & Source Link ─────────────────────
