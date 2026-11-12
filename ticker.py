@@ -96,6 +96,7 @@ DEFAULT_THEME = {
     "negative_color": "#f38ba8",
     "separator_color": "#585b70",
     "alert_color": "#f9e2af",
+    "hover_color": "#262636",  # Nền highlight khi hover vào 1 mã
     "opacity": 1.0,
     "pad_x": 10,  # Đệm ngang (px mỗi bên) — tăng để thanh rộng/thoáng hơn
     "pad_y": 2,   # Đệm dọc (px mỗi bên) — tăng để thanh cao/dày hơn
@@ -104,9 +105,12 @@ DEFAULT_THEME = {
 # Preset theme chọn nhanh trong Settings (preset "Trong suốt" dùng lại TRANSPARENT_COLOR
 # để ai thích kiểu "chữ nổi" không nền như bản gốc).
 THEME_PRESETS = {
-    "Tối (Mocha)": {"bg": "#11111b", "fg": "#cdd6f4", "separator_color": "#585b70"},
-    "Sáng (Light)": {"bg": "#eff1f5", "fg": "#4c4f69", "separator_color": "#9ca0b0"},
-    "Trong suốt": {"bg": TRANSPARENT_COLOR, "fg": "#ffffff", "separator_color": "#585b70"},
+    "Tối (Mocha)": {"bg": "#11111b", "fg": "#cdd6f4", "separator_color": "#585b70",
+                    "hover_color": "#262636"},
+    "Sáng (Light)": {"bg": "#eff1f5", "fg": "#4c4f69", "separator_color": "#9ca0b0",
+                      "hover_color": "#e0e3eb"},
+    "Trong suốt": {"bg": TRANSPARENT_COLOR, "fg": "#ffffff", "separator_color": "#585b70",
+                    "hover_color": "#313244"},
 }
 
 # Danh sách font gợi ý trong Settings (ưu tiên monospace cho bảng giá thẳng cột).
@@ -1218,20 +1222,53 @@ class TickerApp:
             except Exception:
                 pass
 
-    def _flash_alert(self, frame):
+    def _flash_alert(self, frame, key=None):
         """Highlight tạm thời nền của 1 mã khi có cảnh báo giá vượt ngưỡng."""
+        widgets = self.symbol_widgets.get(key) if key else None
+        if widgets:
+            widgets["flashing"] = True
         try:
             frame.configure(bg=self.theme["alert_color"])
             for child in frame.winfo_children():
                 child.configure(bg=self.theme["alert_color"])
-            self.root.after(ALERT_FLASH_MS, lambda: self._reset_flash(frame))
+            self.root.after(ALERT_FLASH_MS, lambda: self._reset_flash(frame, key))
         except Exception:
             pass
 
-    def _reset_flash(self, frame):
+    def _reset_flash(self, frame, key=None):
+        widgets = self.symbol_widgets.get(key) if key else None
+        if widgets:
+            widgets["flashing"] = False
         try:
             frame.configure(bg=self.theme["bg"])
             for child in frame.winfo_children():
+                child.configure(bg=self.theme["bg"])
+        except Exception:
+            pass
+
+    def _on_item_enter(self, event, key):
+        """Hover vào mã: hiện Tooltip + highlight nền nhẹ (bỏ qua khi đang flash cảnh báo)."""
+        self._show_tooltip(event, key)
+        widgets = self.symbol_widgets.get(key)
+        if not widgets or widgets.get("flashing"):
+            return
+        try:
+            color = self.theme.get("hover_color", self.theme["bg"])
+            widgets["frame"].configure(bg=color)
+            for child in widgets["frame"].winfo_children():
+                child.configure(bg=color)
+        except Exception:
+            pass
+
+    def _on_item_leave(self, event, key):
+        """Rời khỏi mã: ẩn Tooltip (có trễ chống nhấp nháy) + bỏ highlight nền."""
+        self._hide_tooltip(event)
+        widgets = self.symbol_widgets.get(key)
+        if not widgets or widgets.get("flashing"):
+            return
+        try:
+            widgets["frame"].configure(bg=self.theme["bg"])
+            for child in widgets["frame"].winfo_children():
                 child.configure(bg=self.theme["bg"])
         except Exception:
             pass
@@ -1285,13 +1322,14 @@ class TickerApp:
                     "frame": frame,
                     "lbl_price": lbl_price,
                     "lbl_change": lbl_change,
-                    "lbl_sep": lbl_sep
+                    "lbl_sep": lbl_sep,
+                    "flashing": False,
                 }
 
-                # Bind sự kiện hover Tooltip cho tất cả widget con của cụm
+                # Bind sự kiện hover (Tooltip + highlight nền) cho tất cả widget con của cụm
                 for w in (frame, lbl_price, lbl_change):
-                    w.bind("<Enter>", lambda e, k=key: self._show_tooltip(e, k))
-                    w.bind("<Leave>", self._hide_tooltip)
+                    w.bind("<Enter>", lambda e, k=key: self._on_item_enter(e, k))
+                    w.bind("<Leave>", lambda e, k=key: self._on_item_leave(e, k))
                     w.bind("<Motion>", self._move_tooltip)
 
             # Cập nhật văn bản
@@ -1312,7 +1350,7 @@ class TickerApp:
                 widgets["lbl_sep"].pack_forget()
 
             if data.get("alert"):
-                self._flash_alert(widgets["frame"])
+                self._flash_alert(widgets["frame"], key=key)
                 self._notify_alert(data)
 
         # Chỉ re-pack lại toàn bộ khi thứ tự thay đổi hoặc vừa tạo widget mới —
@@ -1717,6 +1755,7 @@ class TickerApp:
 
         bg_var = tk.StringVar(value=self.theme.get("bg", "#11111b"))
         fg_var = tk.StringVar(value=self.theme.get("fg", "white"))
+        hover_var = tk.StringVar(value=self.theme.get("hover_color", "#262636"))
         font_family_var = tk.StringVar(value=self.theme.get("font_family", "Consolas"))
         opacity_var = tk.DoubleVar(value=self.theme.get("opacity", 1.0))
         font_size_var = tk.IntVar(value=self.theme.get("font_size", 9))
@@ -1744,6 +1783,7 @@ class TickerApp:
         def preview_appearance(*_):
             self.theme["bg"] = bg_var.get()
             self.theme["fg"] = fg_var.get()
+            self.theme["hover_color"] = hover_var.get()
             self.theme["font_family"] = font_family_var.get()
             try:
                 self.theme["font_size"] = int(font_size_var.get())
@@ -1787,6 +1827,8 @@ class TickerApp:
                 return
             bg_var.set(p["bg"]); bg_sw.configure(bg=p["bg"])
             fg_var.set(p["fg"]); fg_sw.configure(bg=p["fg"])
+            if "hover_color" in p:
+                hover_var.set(p["hover_color"]); hover_sw.configure(bg=p["hover_color"])
             self.theme["separator_color"] = p.get("separator_color",
                                                   self.theme.get("separator_color"))
             preview_appearance()
@@ -1803,39 +1845,43 @@ class TickerApp:
         fg_holder, fg_sw = make_swatch(tf, fg_var)
         fg_holder.grid(row=2, column=1, sticky="w", padx=(8, 0))
 
+        tk.Label(tf, text="Màu hover:", **LBL).grid(row=3, column=0, sticky="w", pady=4)
+        hover_holder, hover_sw = make_swatch(tf, hover_var)
+        hover_holder.grid(row=3, column=1, sticky="w", padx=(8, 0))
+
         families = list(dict.fromkeys([font_family_var.get()] + FONT_FAMILIES))
-        tk.Label(tf, text="Font:", **LBL).grid(row=3, column=0, sticky="w", pady=4)
+        tk.Label(tf, text="Font:", **LBL).grid(row=4, column=0, sticky="w", pady=4)
         fom = tk.OptionMenu(tf, font_family_var, *families, command=lambda v: preview_appearance())
         style_om(fom)
-        fom.grid(row=3, column=1, sticky="w", padx=(8, 0))
+        fom.grid(row=4, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=4, column=0, sticky="w", pady=4)
+        tk.Label(tf, text="Cỡ chữ:", **LBL).grid(row=5, column=0, sticky="w", pady=4)
         tk.Spinbox(tf, from_=7, to=16, textvariable=font_size_var, width=5, relief="flat",
                    bg=S0, fg=TEXT, buttonbackground=S1, insertbackground=TEXT,
-                   command=preview_appearance).grid(row=4, column=1, sticky="w", padx=(8, 0))
+                   command=preview_appearance).grid(row=5, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Độ mờ:", **LBL).grid(row=5, column=0, sticky="w", pady=4)
+        tk.Label(tf, text="Độ mờ:", **LBL).grid(row=6, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0.3, to=1.0, resolution=0.05, orient="horizontal",
                  variable=opacity_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8), command=preview_opacity).grid(row=5, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_opacity).grid(row=6, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Đệm ngang:", **LBL).grid(row=6, column=0, sticky="w", pady=4)
+        tk.Label(tf, text="Đệm ngang:", **LBL).grid(row=7, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0, to=40, resolution=1, orient="horizontal",
                  variable=padx_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8), command=preview_size).grid(row=6, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_size).grid(row=7, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(tf, text="Đệm dọc (độ dày):", **LBL).grid(row=7, column=0, sticky="w", pady=4)
+        tk.Label(tf, text="Đệm dọc (độ dày):", **LBL).grid(row=8, column=0, sticky="w", pady=4)
         tk.Scale(tf, from_=0, to=24, resolution=1, orient="horizontal",
                  variable=pady_var, bg=BASE, fg=TEXT, highlightthickness=0,
                  troughcolor=S0, activebackground=BLUE, length=210,
-                 font=(UI, 8), command=preview_size).grid(row=7, column=1, sticky="w", padx=(8, 0))
+                 font=(UI, 8), command=preview_size).grid(row=8, column=1, sticky="w", padx=(8, 0))
 
         tk.Checkbutton(tf, text="Khởi động cùng Windows", variable=autostart_var,
                        bg=BASE, fg=TEXT, selectcolor=S0, activebackground=BASE,
                        activeforeground=TEXT, font=(UI, 9)).grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            row=9, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         def save():
             try:
@@ -1853,6 +1899,7 @@ class TickerApp:
                 self.theme["font_family"] = font_family_var.get()
                 self.theme["bg"] = bg_var.get()
                 self.theme["fg"] = fg_var.get()
+                self.theme["hover_color"] = hover_var.get()
                 self.theme["pad_x"] = int(padx_var.get())
                 self.theme["pad_y"] = int(pady_var.get())
                 self._apply_theme()
